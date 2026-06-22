@@ -560,7 +560,10 @@
     const overPeaks = allPeaks.filter(p => p.freq > FUND_MAX);
 
     // ---- live spectrum: only the clear, dominant peaks ----
-    drawSpectrum(freqData, selectClearPeaks(bandPeaks, PEAK_DROP_DB, SPEC_MAX_LABELS));
+    // The same filtered set drives chamber/harmonic detection, so the history
+    // strip-chart only shows harmonics strong enough to appear in the spectrum.
+    const clearBandPeaks = selectClearPeaks(bandPeaks, PEAK_DROP_DB, SPEC_MAX_LABELS);
+    drawSpectrum(freqData, clearBandPeaks);
 
     // ---- overblow field: strongest peak above 1k ----
     const ob = el('overblow');
@@ -575,7 +578,7 @@
     }
 
     // ---- chambers: fundamentals -> tracked voices ----
-    const funds = signalPresent ? findFundamentals(bandPeaks) : [];
+    const funds = signalPresent ? findFundamentals(clearBandPeaks) : [];
     const live = updateVoices(funds, t);
     renderVoiceCards(live);
 
