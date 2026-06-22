@@ -95,9 +95,8 @@
   .voice .overtones { font-size: 11px; color: var(--muted); margin-top: 8px; min-height: 14px; }
   .voice .overtones b { color: var(--text); font-weight: 600; }
 
-  .unison-hint {
-    font-size: 12px; color: var(--warn); margin-bottom: 14px; min-height: 16px;
-  }
+  .voice.unison { opacity: .7; border-left-style: dashed; }
+  .voice.unison .note { font-size: 22px; color: var(--warn); letter-spacing: 0; }
 
   /* ---- noise ---- */
   .noise-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; align-items: start; }
@@ -156,7 +155,6 @@
   <section>
     <h2>Chambers <span class="hint">best guess · harmonics folded into their fundamental</span></h2>
     <div class="voices" id="voices"></div>
-    <div class="unison-hint" id="unisonHint"></div>
     <h2 style="margin-top:4px">History <span class="hint">last 12 s · solid = chamber, dotted = rejected harmonic</span></h2>
     <canvas id="history"></canvas>
   </section>
@@ -196,6 +194,10 @@
   const FUND_MAX = 1000;        // chambers/fundamentals live below this
   const PEAK_MAX = 5000;        // we still scan above 1k to catch the overblow
   const FFT_SIZE = 32768;       // max AnalyserNode size -> fine resolution
+
+  // input gating (reject silence + broadband noise like keyboard taps)
+  const ABS_FLOOR_DB = -80;       // absolute floor: ignore frames whose loudest in-band bin is below this (set low so quiet tones still pass)
+  const TONAL_MAX_FLATNESS = 0.45;// require a tonal signal; broadband transients (typing, clicks) read as high flatness and are skipped
 
   // peak filtering (declutter the spectrum: keep only clear, dominant peaks)
   const PEAK_DROP_DB = 22;      // ignore peaks more than this far below the loudest
@@ -391,25 +393,41 @@
     const cards = voicesEl.children;
     for (let i = 0; i < cards.length; i++) {
       const card = cards[i], v = live[i];
+      const note = card.querySelector('.note');
+      const freq = card.querySelector('.freq');
+      const cents = card.querySelector('.cents');
+      const overt = card.querySelector('.overtones');
       if (!v) {
-        card.classList.add('idle');
-        card.querySelector('.note').textContent = '—';
-        card.querySelector('.freq').textContent = '— Hz';
-        card.querySelector('.cents').textContent = '—';
-        card.querySelector('.overtones').textContent = '';
+        if (live.length >= 1) {
+          // We expect 3 chambers but see fewer distinct pitches: the missing
+          // ones are doubling a detected pitch (unison) and have no peak of
+          // their own. Mark the slot rather than blanking it, so layout holds.
+          card.classList.remove('idle');
+          card.classList.add('unison');
+          note.textContent = 'unison';
+          freq.textContent = '';
+          cents.textContent = '';
+          overt.textContent = 'doubling another chamber';
+        } else {
+          card.classList.remove('unison');
+          card.classList.add('idle');
+          note.textContent = '—';
+          freq.textContent = '— Hz';
+          cents.textContent = '';
+          overt.textContent = '';
+        }
         continue;
       }
-      card.classList.remove('idle');
-      const { name, octave, cents } = freqToNote(v.freq);
-      card.querySelector('.note').innerHTML = `${name}<span class="oct">${octave}</span>`;
-      card.querySelector('.freq').textContent = `${v.freq.toFixed(1)} Hz`;
-      const c = card.querySelector('.cents');
-      const inTune = Math.abs(cents) <= 5, close = Math.abs(cents) <= 15;
-      c.textContent = `${cents > 0 ? '+' : ''}${cents}¢`;
-      c.style.color = inTune ? 'var(--good)' : close ? 'var(--warn)' : 'var(--bad)';
+      card.classList.remove('idle', 'unison');
+      const { name, octave, cents: centsVal } = freqToNote(v.freq);
+      note.innerHTML = `${name}<span class="oct">${octave}</span>`;
+      freq.textContent = `${v.freq.toFixed(1)} Hz`;
+      const inTune = Math.abs(centsVal) <= 5, close = Math.abs(centsVal) <= 15;
+      cents.textContent = `${centsVal > 0 ? '+' : ''}${centsVal}¢`;
+      cents.style.color = inTune ? 'var(--good)' : close ? 'var(--warn)' : 'var(--bad)';
       const ov = [...new Set(v.overtones)].sort((a, b) => a - b);
-      card.querySelector('.overtones').innerHTML =
-        ov.length ? `overtones: <b>${ov.map(n => n + '×').join(', ')}</b>` : 'pure tone (no overtones)';
+      overt.innerHTML = ov.length
+        ? `overtones: <b>${ov.map(n => n + '×').join(', ')}</b>` : 'pure tone (no overtones)';
     }
   }
 
@@ -552,7 +570,11 @@
     const stability = parseInt(el('stability').value, 10);
     ATTACK = Math.round(1 + stability / 100 * 7);   // 1..8 frames
     RELEASE = Math.round(5 + stability / 100 * 45); // 5..50 frames
-    const signalPresent = (maxDb - noiseFloor) > sensitivity && levelPct > 0.8;
+
+    // gating: enough input present? + tonal (not broadband noise)?
+    const flat = spectralFlatness(freqData);
+    const hasInput = levelPct > 0.8 && maxDb > ABS_FLOOR_DB;
+    const signalPresent = hasInput && (maxDb - noiseFloor) > sensitivity && flat < TONAL_MAX_FLATNESS;
     const thresholdDb = noiseFloor + sensitivity;
 
     let allPeaks = signalPresent ? detectPeaks(freqData, thresholdDb, PEAK_MAX) : [];
@@ -582,22 +604,17 @@
     const live = updateVoices(funds, t);
     renderVoiceCards(live);
 
-    // possible-unison note: instrument has 3 chambers but only N distinct pitches
-    const hint = el('unisonHint');
-    if (live.length === 2) hint.textContent = '2 distinct pitches — possible unison (a third chamber doubling one of these is invisible to the spectrum).';
-    else if (live.length === 1) hint.textContent = '1 distinct pitch — chambers likely in unison.';
-    else hint.textContent = '';
-
     // feed rejected harmonics into the history scatter
     funds.forEach(f => f.overtones.forEach(n => harmonicTrail.push({ t, freq: f.freq * n })));
     drawHistory(t);
 
     // ---- spectral flatness + stray-peak list ----
-    const flat = signalPresent ? spectralFlatness(freqData) : 0;
+    // shown whenever there's input (even noise), so the meter still reports
+    // "noisy" while typing — only the pitch analysis above is gated off.
     const flatPct = Math.min(100, flat * 100 * 4);
-    el('flatMeter').style.width = flatPct + '%';
+    el('flatMeter').style.width = hasInput ? flatPct + '%' : '0';
     el('flatMeter').style.background = flatPct > 55 ? 'var(--bad)' : flatPct > 25 ? 'var(--warn)' : 'var(--good)';
-    el('flatVal').textContent = signalPresent
+    el('flatVal').textContent = hasInput
       ? (flatPct < 25 ? 'tonal' : flatPct < 55 ? 'mixed' : 'noisy') + ` (${flat.toFixed(3)})` : '—';
 
     // "other peaks": everything that isn't one of the tracked fundamentals
@@ -660,7 +677,6 @@
     el('toggle').classList.remove('stop');
     statusEl.textContent = 'Stopped.';
     renderVoiceCards([]);
-    el('unisonHint').textContent = '';
     el('overblow').innerHTML = 'Overblow (&gt;1 kHz): <b>—</b>';
     el('overblow').classList.remove('hot');
     el('flatVal').textContent = '—'; el('levelVal').textContent = '—';
