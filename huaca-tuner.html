@@ -76,8 +76,8 @@
   .overblow b { color: var(--text); font-weight: 600; }
   .overblow.hot { border-color: var(--warn); }
   canvas { width: 100%; display: block; border-radius: 8px; background: #0a0d12; }
-  #spectrum { height: 340px; }
-  #history  { height: 230px; }
+  #spectrum { height: 310px; }
+  #history  { height: 210px; }
 
   /* ---- chamber voices ---- */
   .voices { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-bottom: 16px; }
@@ -132,6 +132,10 @@
       sensitivity
       <input type="range" id="sensitivity" min="4" max="30" value="12" style="width:90px">
     </label>
+    <label class="ctrl" title="Higher = chambers appear/disappear more slowly but steadier (longer attack & release). Lower = snappier but jumpier.">
+      stability
+      <input type="range" id="stability" min="0" max="100" value="50" style="width:90px">
+    </label>
     <button id="toggle">Start mic</button>
   </div>
 </header>
@@ -142,7 +146,7 @@
   <!-- Live spectrum (descriptive: shows everything) -->
   <section>
     <div class="spec-head">
-      <h2 style="margin:0">Live spectrum <span class="hint">0–1000 Hz · top 10 peaks labelled</span></h2>
+      <h2 style="margin:0">Live spectrum <span class="hint">0–1000 Hz · clear peaks labelled</span></h2>
       <div class="overblow" id="overblow">Overblow (&gt;1 kHz): <b>—</b></div>
     </div>
     <canvas id="spectrum"></canvas>
@@ -193,13 +197,18 @@
   const PEAK_MAX = 5000;        // we still scan above 1k to catch the overblow
   const FFT_SIZE = 32768;       // max AnalyserNode size -> fine resolution
 
+  // peak filtering (declutter the spectrum: keep only clear, dominant peaks)
+  const PEAK_DROP_DB = 22;      // ignore peaks more than this far below the loudest
+  const SPEC_MAX_LABELS = 6;    // hard cap on labelled peaks
+  const DEDUP_CENTS = 40;       // merge peaks closer than this, keeping the stronger
+
   // chamber detection / stabilization
   const MAX_VOICES = 3;
   const HARMONIC_CENTS = 35;    // how close to n× counts as a harmonic
   const MATCH_CENTS = 60;       // frame-to-frame continuity window
   const SMOOTH_N = 8;           // median window per voice (~130ms @ 60fps)
-  const ATTACK = 3;             // frames a voice must persist to appear
-  const RELEASE = 20;           // frames a voice must be absent to vanish
+  let ATTACK = 3;               // frames a voice must persist to appear (set by stability slider)
+  let RELEASE = 20;             // frames a voice must be absent to vanish (set by stability slider)
 
   // history strip-chart
   const HIST_MS = 12000;
@@ -253,6 +262,22 @@
     }
     peaks.sort((x, y) => y.mag - x.mag);
     return peaks;
+  }
+
+  // Keep only the clear, dominant peaks: within PEAK_DROP_DB of the loudest,
+  // de-duplicated by pitch (closest pair merged, stronger kept), capped at maxCount.
+  // `peaks` must already be sorted strongest-first.
+  function selectClearPeaks(peaks, dropDb, maxCount) {
+    if (!peaks.length) return [];
+    const floor = peaks[0].mag - dropDb;
+    const kept = [];
+    for (const p of peaks) {
+      if (p.mag < floor) break;
+      if (kept.some(k => Math.abs(centsBetween(p.freq, k.freq)) < DEDUP_CENTS)) continue;
+      kept.push(p);
+      if (kept.length >= maxCount) break;
+    }
+    return kept;
   }
 
   // Fold peaks into fundamentals: a peak within HARMONIC_CENTS of an integer
@@ -524,6 +549,9 @@
     const noiseFloor = band[Math.floor(band.length / 2)];
 
     const sensitivity = parseInt(el('sensitivity').value, 10);
+    const stability = parseInt(el('stability').value, 10);
+    ATTACK = Math.round(1 + stability / 100 * 7);   // 1..8 frames
+    RELEASE = Math.round(5 + stability / 100 * 45); // 5..50 frames
     const signalPresent = (maxDb - noiseFloor) > sensitivity && levelPct > 0.8;
     const thresholdDb = noiseFloor + sensitivity;
 
@@ -531,8 +559,8 @@
     const bandPeaks = allPeaks.filter(p => p.freq <= FUND_MAX);
     const overPeaks = allPeaks.filter(p => p.freq > FUND_MAX);
 
-    // ---- live spectrum: top 10 peaks in band ----
-    drawSpectrum(freqData, bandPeaks.slice(0, 10));
+    // ---- live spectrum: only the clear, dominant peaks ----
+    drawSpectrum(freqData, selectClearPeaks(bandPeaks, PEAK_DROP_DB, SPEC_MAX_LABELS));
 
     // ---- overblow field: strongest peak above 1k ----
     const ob = el('overblow');
@@ -571,7 +599,8 @@
 
     // "other peaks": everything that isn't one of the tracked fundamentals
     const fundFreqs = funds.map(f => f.freq);
-    const others = allPeaks.filter(p => !fundFreqs.some(ff => Math.abs(centsBetween(p.freq, ff)) < 20)).slice(0, 5);
+    const others = selectClearPeaks(allPeaks, PEAK_DROP_DB, 8)
+      .filter(p => !fundFreqs.some(ff => Math.abs(centsBetween(p.freq, ff)) < 25)).slice(0, 5);
     const bgEl = el('bgtones');
     bgEl.innerHTML = others.length
       ? '<ul>' + others.map(p => {
