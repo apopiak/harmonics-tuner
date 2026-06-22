@@ -1,0 +1,649 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Huaca Polyphonic Tuner</title>
+<style>
+  :root {
+    --bg: #0e1116;
+    --panel: #161b22;
+    --panel-2: #1c232d;
+    --line: #2a323d;
+    --text: #e6edf3;
+    --muted: #8b97a6;
+    --accent: #4cc2ff;
+    --good: #3fb950;
+    --warn: #d29922;
+    --bad: #f85149;
+    --v1: #4cc2ff;
+    --v2: #56d364;
+    --v3: #e3b341;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  header {
+    padding: 16px 24px;
+    border-bottom: 1px solid var(--line);
+    display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+  }
+  h1 { font-size: 18px; margin: 0; font-weight: 600; letter-spacing: .2px; }
+  h1 span { color: var(--muted); font-weight: 400; }
+  .controls { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-left: auto; }
+  button {
+    font: inherit; font-weight: 600;
+    background: var(--accent); color: #04121d; border: 0;
+    padding: 9px 18px; border-radius: 8px; cursor: pointer;
+    transition: filter .15s, background .15s;
+  }
+  button:hover { filter: brightness(1.08); }
+  button.stop { background: var(--bad); color: #1a0606; }
+  label.ctrl { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 13px; user-select: none; }
+  select {
+    background: var(--panel-2); color: var(--text); border: 1px solid var(--line);
+    border-radius: 6px; padding: 5px 8px; font: inherit; font-size: 13px;
+  }
+  input[type=range] { accent-color: var(--accent); }
+
+  main { padding: 20px 24px; max-width: 1100px; margin: 0 auto; }
+  .status { font-size: 13px; color: var(--muted); margin-bottom: 16px; min-height: 18px; }
+  .status.err { color: var(--bad); }
+
+  section {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+    padding: 16px; margin-bottom: 20px;
+  }
+  section h2 {
+    font-size: 13px; text-transform: uppercase; letter-spacing: .8px;
+    color: var(--muted); margin: 0 0 12px; font-weight: 600;
+    display: flex; align-items: baseline; gap: 10px;
+  }
+  section h2 .hint { text-transform: none; letter-spacing: 0; font-weight: 400; font-size: 12px; color: var(--muted); }
+
+  /* ---- live spectrum ---- */
+  .spec-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 12px; flex-wrap: wrap; }
+  .overblow {
+    font-size: 13px; color: var(--muted); background: var(--panel-2);
+    border: 1px solid var(--line); border-radius: 8px; padding: 6px 12px;
+    font-variant-numeric: tabular-nums; white-space: nowrap;
+  }
+  .overblow b { color: var(--text); font-weight: 600; }
+  .overblow.hot { border-color: var(--warn); }
+  canvas { width: 100%; display: block; border-radius: 8px; background: #0a0d12; }
+  #spectrum { height: 340px; }
+  #history  { height: 230px; }
+
+  /* ---- chamber voices ---- */
+  .voices { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-bottom: 16px; }
+  @media (max-width: 720px) { .voices { grid-template-columns: 1fr; } }
+  .voice {
+    background: var(--panel-2); border: 1px solid var(--line); border-radius: 12px;
+    padding: 14px; transition: opacity .2s; border-left: 3px solid var(--line);
+  }
+  .voice.idle { opacity: .35; }
+  .voice .vlabel { font-size: 11px; text-transform: uppercase; letter-spacing: .8px; color: var(--muted); font-weight: 600; margin-bottom: 6px; }
+  .voice .note { font-size: 38px; font-weight: 700; line-height: 1; letter-spacing: -1px; }
+  .voice .note .oct { font-size: 19px; color: var(--muted); font-weight: 500; }
+  .voice .freq { color: var(--muted); font-size: 13px; margin-top: 4px; font-variant-numeric: tabular-nums; }
+  .voice .cents { font-size: 13px; font-weight: 600; margin-top: 2px; font-variant-numeric: tabular-nums; }
+  .voice .overtones { font-size: 11px; color: var(--muted); margin-top: 8px; min-height: 14px; }
+  .voice .overtones b { color: var(--text); font-weight: 600; }
+
+  .unison-hint {
+    font-size: 12px; color: var(--warn); margin-bottom: 14px; min-height: 16px;
+  }
+
+  /* ---- noise ---- */
+  .noise-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; align-items: start; }
+  @media (max-width: 640px) { .noise-grid { grid-template-columns: 1fr; } }
+  .meter-label { font-size: 12px; color: var(--muted); margin-bottom: 6px; display: flex; justify-content: space-between; }
+  .meter-label b { color: var(--text); font-variant-numeric: tabular-nums; }
+  .meter { height: 10px; background: var(--panel-2); border-radius: 5px; overflow: hidden; margin-bottom: 16px; }
+  .meter-fill { height: 100%; width: 0; transition: width .12s, background .12s; }
+  .bgtones { font-size: 13px; }
+  .bgtones .empty { color: var(--muted); font-style: italic; }
+  .bgtones ul { list-style: none; margin: 0; padding: 0; }
+  .bgtones li { display: flex; justify-content: space-between; padding: 4px 0; border-bottom: 1px solid var(--line); font-variant-numeric: tabular-nums; }
+  .bgtones li:last-child { border-bottom: 0; }
+  .bgtones .bfreq { color: var(--muted); }
+
+  footer { color: var(--muted); font-size: 12px; padding: 8px 24px 28px; max-width: 1100px; margin: 0 auto; }
+  code { background: var(--panel-2); padding: 1px 5px; border-radius: 4px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Huaca Tuner <span>· 3-chamber pitch tracking</span></h1>
+  <div class="controls">
+    <label class="ctrl" title="Concert pitch reference. Your huaca is tuned to A=432.">
+      A =
+      <select id="refA">
+        <option value="432" selected>432 Hz</option>
+        <option value="440">440 Hz</option>
+      </select>
+    </label>
+    <label class="ctrl" title="How far above the measured noise floor a peak must rise to count. Lower = more sensitive.">
+      sensitivity
+      <input type="range" id="sensitivity" min="4" max="30" value="12" style="width:90px">
+    </label>
+    <button id="toggle">Start mic</button>
+  </div>
+</header>
+
+<main>
+  <div class="status" id="status">Press “Start mic” and grant microphone access.</div>
+
+  <!-- Live spectrum (descriptive: shows everything) -->
+  <section>
+    <div class="spec-head">
+      <h2 style="margin:0">Live spectrum <span class="hint">0–1000 Hz · top 10 peaks labelled</span></h2>
+      <div class="overblow" id="overblow">Overblow (&gt;1 kHz): <b>—</b></div>
+    </div>
+    <canvas id="spectrum"></canvas>
+  </section>
+
+  <!-- Chamber verdict (best guess, harmonic-aware) -->
+  <section>
+    <h2>Chambers <span class="hint">best guess · harmonics folded into their fundamental</span></h2>
+    <div class="voices" id="voices"></div>
+    <div class="unison-hint" id="unisonHint"></div>
+    <h2 style="margin-top:4px">History <span class="hint">last 12 s · solid = chamber, dotted = rejected harmonic</span></h2>
+    <canvas id="history"></canvas>
+  </section>
+
+  <!-- Background / noise (extra credit) -->
+  <section>
+    <h2>Background &amp; noise</h2>
+    <div class="noise-grid">
+      <div>
+        <div class="meter-label"><span>Tonal ↔ Noisy (spectral flatness)</span><b id="flatVal">—</b></div>
+        <div class="meter"><div class="meter-fill" id="flatMeter"></div></div>
+        <div class="meter-label"><span>Input level</span><b id="levelVal">—</b></div>
+        <div class="meter"><div class="meter-fill" id="levelMeter"></div></div>
+      </div>
+      <div class="bgtones">
+        <div class="meter-label"><span>Other peaks (overtones &amp; stray tones)</span></div>
+        <div id="bgtones"><div class="empty">—</div></div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  Sustained tones read best. Solid trails in the history are the chambers; a dotted trail glued at exactly 2×/3× a
+  chamber is its overtone, not a fourth voice. Mic needs a secure context — serve over <code>https</code> or
+  <code>localhost</code>.
+</footer>
+
+<script>
+(() => {
+  "use strict";
+
+  const NOTE_NAMES = ['C','C♯','D','D♯','E','F','F♯','G','G♯','A','A♯','B'];
+  const VOICE_COLORS = ['#4cc2ff', '#56d364', '#e3b341']; // low → high
+
+  const MIN_FREQ = 55;          // lowest fundamental we look for
+  const FUND_MAX = 1000;        // chambers/fundamentals live below this
+  const PEAK_MAX = 5000;        // we still scan above 1k to catch the overblow
+  const FFT_SIZE = 32768;       // max AnalyserNode size -> fine resolution
+
+  // chamber detection / stabilization
+  const MAX_VOICES = 3;
+  const HARMONIC_CENTS = 35;    // how close to n× counts as a harmonic
+  const MATCH_CENTS = 60;       // frame-to-frame continuity window
+  const SMOOTH_N = 8;           // median window per voice (~130ms @ 60fps)
+  const ATTACK = 3;             // frames a voice must persist to appear
+  const RELEASE = 20;           // frames a voice must be absent to vanish
+
+  // history strip-chart
+  const HIST_MS = 12000;
+  const HIST_FMIN = 110, HIST_FMAX = 1050; // y-axis log range
+
+  let audioCtx, analyser, source, stream, rafId;
+  let freqData, timeData, sampleRate, binWidth;
+  let running = false;
+  let refA = 432;
+
+  let voices = [];              // persistent tracked chambers
+  let nextVoiceId = 1;
+  let harmonicTrail = [];       // {t, freq} scatter of rejected harmonics
+
+  const el = id => document.getElementById(id);
+  const statusEl = el('status');
+  const voicesEl = el('voices');
+  const specCanvas = el('spectrum');
+  const histCanvas = el('history');
+  const specCtx = specCanvas.getContext('2d');
+  const histCtx = histCanvas.getContext('2d');
+
+  const now = () => performance.now();
+  const centsBetween = (a, b) => 1200 * Math.log2(a / b);
+
+  // ---------- pitch math ----------
+  function freqToNote(freq) {
+    const midi = 69 + 12 * Math.log2(freq / refA);
+    const rounded = Math.round(midi);
+    const cents = Math.round((midi - rounded) * 100);
+    const name = NOTE_NAMES[((rounded % 12) + 12) % 12];
+    const octave = Math.floor(rounded / 12) - 1;
+    return { name, octave, cents };
+  }
+  const noteLabel = f => { const n = freqToNote(f); return n.name + n.octave; };
+
+  // ---------- peak detection w/ parabolic interpolation ----------
+  function detectPeaks(db, thresholdDb, fMax) {
+    const minBin = Math.max(1, Math.floor(MIN_FREQ / binWidth));
+    const maxBin = Math.min(db.length - 2, Math.ceil(fMax / binWidth));
+    const peaks = [];
+    for (let i = minBin; i <= maxBin; i++) {
+      const a = db[i - 1], b = db[i], c = db[i + 1];
+      if (b > a && b >= c && b > thresholdDb) {
+        const denom = (a - 2 * b + c);
+        const p = denom !== 0 ? 0.5 * (a - c) / denom : 0;
+        const freq = (i + p) * binWidth;
+        const mag = b - 0.25 * (a - c) * p;
+        if (freq >= MIN_FREQ && freq <= fMax) peaks.push({ freq, mag });
+      }
+    }
+    peaks.sort((x, y) => y.mag - x.mag);
+    return peaks;
+  }
+
+  // Fold peaks into fundamentals: a peak within HARMONIC_CENTS of an integer
+  // multiple (2..6) of a STRONGER already-accepted fundamental is its overtone,
+  // not a separate chamber. (D5 = 2.00×D4 -> overtone; A4 = 1.5×D4 -> new voice.)
+  function findFundamentals(peaks) {
+    const funds = [];
+    for (const p of peaks) {
+      let folded = false;
+      for (const f of funds) {
+        const ratio = p.freq / f.freq;
+        const n = Math.round(ratio);
+        if (n >= 2 && n <= 6 && Math.abs(centsBetween(p.freq, n * f.freq)) < HARMONIC_CENTS) {
+          f.overtones.push(n);
+          folded = true;
+          break;
+        }
+      }
+      if (!folded) funds.push({ freq: p.freq, mag: p.mag, overtones: [] });
+    }
+    funds.sort((a, b) => b.mag - a.mag);          // strongest first
+    return funds.slice(0, MAX_VOICES);
+  }
+
+  // spectral flatness over the display band (0 = pure tone, 1 = white noise)
+  function spectralFlatness(db) {
+    const minBin = Math.max(1, Math.floor(MIN_FREQ / binWidth));
+    const maxBin = Math.min(db.length - 1, Math.ceil(FUND_MAX / binWidth));
+    let logSum = 0, linSum = 0, n = 0;
+    for (let i = minBin; i <= maxBin; i++) {
+      const power = Math.pow(10, db[i] / 10);
+      logSum += Math.log(power + 1e-12);
+      linSum += power; n++;
+    }
+    if (!n || linSum === 0) return 0;
+    return Math.min(1, Math.exp(logSum / n) / (linSum / n));
+  }
+
+  const median = arr => {
+    const s = [...arr].sort((a, b) => a - b);
+    return s[Math.floor(s.length / 2)];
+  };
+
+  // ---------- voice tracking / stabilization ----------
+  function updateVoices(funds, t) {
+    voices.forEach(v => v.matchedThisFrame = false);
+
+    // match each detected fundamental to the nearest existing voice
+    for (const f of funds) {
+      let best = null, bestCents = MATCH_CENTS;
+      for (const v of voices) {
+        if (v.matchedThisFrame) continue;
+        const dc = Math.abs(centsBetween(f.freq, v.freq));
+        if (dc < bestCents) { bestCents = dc; best = v; }
+      }
+      if (best) {
+        best.matchedThisFrame = true;
+        best.samples.push(f.freq);
+        if (best.samples.length > SMOOTH_N) best.samples.shift();
+        best.freq = median(best.samples);
+        best.overtones = f.overtones;
+        best.framesSeen++;
+        best.framesMissing = 0;
+        best.lastT = t;
+      } else {
+        voices.push({
+          id: nextVoiceId++, freq: f.freq, samples: [f.freq], overtones: f.overtones,
+          framesSeen: 1, framesMissing: 0, matchedThisFrame: true, lastT: t, trail: []
+        });
+      }
+    }
+
+    // age out unmatched voices
+    for (const v of voices) {
+      if (!v.matchedThisFrame) { v.framesMissing++; v.framesSeen = 0; }
+    }
+    voices = voices.filter(v => v.framesMissing < RELEASE);
+
+    // a voice is "live" once it has survived ATTACK frames and is currently present
+    const live = voices
+      .filter(v => v.framesSeen >= ATTACK && v.framesMissing === 0)
+      .sort((a, b) => a.freq - b.freq)
+      .slice(0, MAX_VOICES);
+
+    // record trails for the strip-chart
+    live.forEach(v => {
+      v.trail.push({ t, freq: v.freq });
+      while (v.trail.length && v.trail[0].t < t - HIST_MS) v.trail.shift();
+    });
+    return live;
+  }
+
+  // ---------- DOM: voice cards ----------
+  function buildVoiceCards() {
+    voicesEl.innerHTML = '';
+    for (let i = 0; i < MAX_VOICES; i++) {
+      const d = document.createElement('div');
+      d.className = 'voice idle';
+      d.style.borderLeftColor = VOICE_COLORS[i];
+      d.innerHTML = `
+        <div class="vlabel">Chamber ${i + 1}</div>
+        <div class="note">—</div>
+        <div class="freq">— Hz</div>
+        <div class="cents">—</div>
+        <div class="overtones"></div>`;
+      voicesEl.appendChild(d);
+    }
+  }
+
+  function renderVoiceCards(live) {
+    const cards = voicesEl.children;
+    for (let i = 0; i < cards.length; i++) {
+      const card = cards[i], v = live[i];
+      if (!v) {
+        card.classList.add('idle');
+        card.querySelector('.note').textContent = '—';
+        card.querySelector('.freq').textContent = '— Hz';
+        card.querySelector('.cents').textContent = '—';
+        card.querySelector('.overtones').textContent = '';
+        continue;
+      }
+      card.classList.remove('idle');
+      const { name, octave, cents } = freqToNote(v.freq);
+      card.querySelector('.note').innerHTML = `${name}<span class="oct">${octave}</span>`;
+      card.querySelector('.freq').textContent = `${v.freq.toFixed(1)} Hz`;
+      const c = card.querySelector('.cents');
+      const inTune = Math.abs(cents) <= 5, close = Math.abs(cents) <= 15;
+      c.textContent = `${cents > 0 ? '+' : ''}${cents}¢`;
+      c.style.color = inTune ? 'var(--good)' : close ? 'var(--warn)' : 'var(--bad)';
+      const ov = [...new Set(v.overtones)].sort((a, b) => a - b);
+      card.querySelector('.overtones').innerHTML =
+        ov.length ? `overtones: <b>${ov.map(n => n + '×').join(', ')}</b>` : 'pure tone (no overtones)';
+    }
+  }
+
+  // ---------- canvas sizing ----------
+  function fit(cv, ctx) {
+    const dpr = window.devicePixelRatio || 1;
+    const w = cv.clientWidth, h = cv.clientHeight;
+    cv.width = w * dpr; cv.height = h * dpr;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    return { w, h };
+  }
+  let specSize = { w: 0, h: 0 }, histSize = { w: 0, h: 0 };
+  function resizeAll() { specSize = fit(specCanvas, specCtx); histSize = fit(histCanvas, histCtx); }
+
+  // ---------- spectrum drawing (0..1000 Hz, top-10 labelled) ----------
+  function drawSpectrum(db, labelPeaks) {
+    const { w, h } = specSize;
+    specCtx.clearRect(0, 0, w, h);
+    const minBin = Math.max(1, Math.floor(MIN_FREQ / binWidth));
+    const maxBin = Math.min(db.length - 1, Math.ceil(FUND_MAX / binWidth));
+
+    specCtx.strokeStyle = 'rgba(255,255,255,0.05)';
+    specCtx.fillStyle = '#6b7785';
+    specCtx.font = '10px sans-serif';
+    [100, 200, 300, 400, 500, 600, 700, 800, 900].forEach(f => {
+      const x = (f / FUND_MAX) * w;
+      specCtx.beginPath(); specCtx.moveTo(x, 0); specCtx.lineTo(x, h); specCtx.stroke();
+      specCtx.fillText(f, x + 3, h - 5);
+    });
+
+    specCtx.beginPath();
+    specCtx.moveTo(0, h);
+    for (let i = minBin; i <= maxBin; i++) {
+      const x = (i * binWidth / FUND_MAX) * w;
+      const y = h - Math.max(0, Math.min(1, (db[i] + 100) / 100)) * h;
+      specCtx.lineTo(x, y);
+    }
+    specCtx.lineTo(w, h); specCtx.closePath();
+    const g = specCtx.createLinearGradient(0, 0, 0, h);
+    g.addColorStop(0, 'rgba(76,194,255,0.5)');
+    g.addColorStop(1, 'rgba(76,194,255,0.04)');
+    specCtx.fillStyle = g; specCtx.fill();
+    specCtx.strokeStyle = 'rgba(76,194,255,0.7)'; specCtx.lineWidth = 1; specCtx.stroke();
+
+    // label top-10 peaks within the band, staggering text to avoid collisions
+    labelPeaks.forEach((p, idx) => {
+      const x = (p.freq / FUND_MAX) * w;
+      const y = h - Math.max(0, Math.min(1, (p.mag + 100) / 100)) * h;
+      specCtx.strokeStyle = 'rgba(230,237,243,0.25)';
+      specCtx.lineWidth = 1;
+      specCtx.beginPath(); specCtx.moveTo(x, y); specCtx.lineTo(x, 16 + (idx % 4) * 13); specCtx.stroke();
+      specCtx.fillStyle = '#e6edf3';
+      specCtx.font = 'bold 11px sans-serif';
+      const label = noteLabel(p.freq);
+      const tw = specCtx.measureText(label).width;
+      specCtx.fillText(label, Math.min(w - tw - 2, Math.max(2, x - tw / 2)), 12 + (idx % 4) * 13);
+    });
+  }
+
+  // ---------- history strip-chart ----------
+  const yForFreq = (f, h) => {
+    const t = (Math.log2(f) - Math.log2(HIST_FMIN)) / (Math.log2(HIST_FMAX) - Math.log2(HIST_FMIN));
+    return h - Math.max(0, Math.min(1, t)) * h;
+  };
+  function drawHistory(t) {
+    const { w, h } = histSize;
+    histCtx.clearRect(0, 0, w, h);
+
+    // note gridlines (C and A in range), labelled
+    histCtx.font = '10px sans-serif';
+    for (let midi = 24; midi <= 96; midi++) {
+      const nm = NOTE_NAMES[midi % 12];
+      if (nm !== 'C' && nm !== 'A') continue;
+      const f = refA * Math.pow(2, (midi - 69) / 12);
+      if (f < HIST_FMIN || f > HIST_FMAX) continue;
+      const y = yForFreq(f, h);
+      histCtx.strokeStyle = 'rgba(255,255,255,0.05)';
+      histCtx.beginPath(); histCtx.moveTo(0, y); histCtx.lineTo(w, y); histCtx.stroke();
+      histCtx.fillStyle = '#6b7785';
+      histCtx.fillText(nm + (Math.floor(midi / 12) - 1), 3, y - 2);
+    }
+
+    const xForT = tt => w - ((t - tt) / HIST_MS) * w;
+
+    // rejected harmonics as faint dots
+    histCtx.fillStyle = 'rgba(248,81,73,0.35)';
+    harmonicTrail = harmonicTrail.filter(pt => pt.t >= t - HIST_MS);
+    harmonicTrail.forEach(pt => {
+      if (pt.freq < HIST_FMIN || pt.freq > HIST_FMAX) return;
+      histCtx.beginPath();
+      histCtx.arc(xForT(pt.t), yForFreq(pt.freq, h), 1.5, 0, Math.PI * 2);
+      histCtx.fill();
+    });
+
+    // chamber trails (solid), coloured by current low→high order
+    const live = voices.filter(v => v.trail.length).sort((a, b) => a.freq - b.freq);
+    live.forEach((v, idx) => {
+      histCtx.strokeStyle = VOICE_COLORS[Math.min(idx, VOICE_COLORS.length - 1)];
+      histCtx.lineWidth = 2;
+      histCtx.beginPath();
+      let started = false;
+      let prevT = null;
+      v.trail.forEach(pt => {
+        const x = xForT(pt.t), y = yForFreq(pt.freq, h);
+        // break the line across gaps so released/re-attacked voices don't draw a jump
+        if (started && prevT !== null && pt.t - prevT > 200) { histCtx.stroke(); histCtx.beginPath(); started = false; }
+        if (!started) { histCtx.moveTo(x, y); started = true; } else { histCtx.lineTo(x, y); }
+        prevT = pt.t;
+      });
+      histCtx.stroke();
+    });
+  }
+
+  // ---------- main loop ----------
+  function loop() {
+    rafId = requestAnimationFrame(loop);
+    const t = now();
+    analyser.getFloatFrequencyData(freqData);
+    analyser.getByteTimeDomainData(timeData);
+
+    // input level (RMS)
+    let sumSq = 0;
+    for (let i = 0; i < timeData.length; i++) { const v = (timeData[i] - 128) / 128; sumSq += v * v; }
+    const rms = Math.sqrt(sumSq / timeData.length);
+    const levelPct = Math.min(100, rms * 300);
+    el('levelMeter').style.width = levelPct + '%';
+    el('levelMeter').style.background = levelPct > 5 ? 'var(--accent)' : 'var(--line)';
+    el('levelVal').textContent = (20 * Math.log10(rms + 1e-6)).toFixed(0) + ' dBFS';
+
+    // adaptive threshold from the noise floor (median dB over the fundamental band)
+    const minBin = Math.max(1, Math.floor(MIN_FREQ / binWidth));
+    const maxBin = Math.min(freqData.length - 1, Math.ceil(FUND_MAX / binWidth));
+    const band = [];
+    let maxDb = -Infinity;
+    for (let i = minBin; i <= maxBin; i++) { const v = freqData[i]; band.push(v); if (v > maxDb) maxDb = v; }
+    band.sort((a, b) => a - b);
+    const noiseFloor = band[Math.floor(band.length / 2)];
+
+    const sensitivity = parseInt(el('sensitivity').value, 10);
+    const signalPresent = (maxDb - noiseFloor) > sensitivity && levelPct > 0.8;
+    const thresholdDb = noiseFloor + sensitivity;
+
+    let allPeaks = signalPresent ? detectPeaks(freqData, thresholdDb, PEAK_MAX) : [];
+    const bandPeaks = allPeaks.filter(p => p.freq <= FUND_MAX);
+    const overPeaks = allPeaks.filter(p => p.freq > FUND_MAX);
+
+    // ---- live spectrum: top 10 peaks in band ----
+    drawSpectrum(freqData, bandPeaks.slice(0, 10));
+
+    // ---- overblow field: strongest peak above 1k ----
+    const ob = el('overblow');
+    if (overPeaks.length) {
+      const p = overPeaks[0];
+      const { name, octave, cents } = freqToNote(p.freq);
+      ob.innerHTML = `Overblow (&gt;1 kHz): <b>${name}${octave} ${cents > 0 ? '+' : ''}${cents}¢ · ${p.freq.toFixed(0)} Hz</b>`;
+      ob.classList.add('hot');
+    } else {
+      ob.innerHTML = 'Overblow (&gt;1 kHz): <b>—</b>';
+      ob.classList.remove('hot');
+    }
+
+    // ---- chambers: fundamentals -> tracked voices ----
+    const funds = signalPresent ? findFundamentals(bandPeaks) : [];
+    const live = updateVoices(funds, t);
+    renderVoiceCards(live);
+
+    // possible-unison note: instrument has 3 chambers but only N distinct pitches
+    const hint = el('unisonHint');
+    if (live.length === 2) hint.textContent = '2 distinct pitches — possible unison (a third chamber doubling one of these is invisible to the spectrum).';
+    else if (live.length === 1) hint.textContent = '1 distinct pitch — chambers likely in unison.';
+    else hint.textContent = '';
+
+    // feed rejected harmonics into the history scatter
+    funds.forEach(f => f.overtones.forEach(n => harmonicTrail.push({ t, freq: f.freq * n })));
+    drawHistory(t);
+
+    // ---- spectral flatness + stray-peak list ----
+    const flat = signalPresent ? spectralFlatness(freqData) : 0;
+    const flatPct = Math.min(100, flat * 100 * 4);
+    el('flatMeter').style.width = flatPct + '%';
+    el('flatMeter').style.background = flatPct > 55 ? 'var(--bad)' : flatPct > 25 ? 'var(--warn)' : 'var(--good)';
+    el('flatVal').textContent = signalPresent
+      ? (flatPct < 25 ? 'tonal' : flatPct < 55 ? 'mixed' : 'noisy') + ` (${flat.toFixed(3)})` : '—';
+
+    // "other peaks": everything that isn't one of the tracked fundamentals
+    const fundFreqs = funds.map(f => f.freq);
+    const others = allPeaks.filter(p => !fundFreqs.some(ff => Math.abs(centsBetween(p.freq, ff)) < 20)).slice(0, 5);
+    const bgEl = el('bgtones');
+    bgEl.innerHTML = others.length
+      ? '<ul>' + others.map(p => {
+          const { name, octave, cents } = freqToNote(p.freq);
+          return `<li><span><b>${name}${octave}</b> <span style="color:var(--muted)">${cents > 0 ? '+' : ''}${cents}¢</span></span><span class="bfreq">${p.freq.toFixed(1)} Hz</span></li>`;
+        }).join('') + '</ul>'
+      : '<div class="empty">none</div>';
+  }
+
+  // ---------- start / stop ----------
+  async function start() {
+    try {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia)
+        throw new Error('getUserMedia unavailable — open this page over https:// or http://localhost.');
+      statusEl.className = 'status';
+      statusEl.textContent = 'Requesting microphone…';
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false }
+      });
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      sampleRate = audioCtx.sampleRate;
+      binWidth = sampleRate / FFT_SIZE;
+      analyser = audioCtx.createAnalyser();
+      analyser.fftSize = FFT_SIZE;
+      analyser.smoothingTimeConstant = 0.5;
+      freqData = new Float32Array(analyser.frequencyBinCount);
+      timeData = new Uint8Array(analyser.fftSize);
+      source = audioCtx.createMediaStreamSource(stream);
+      source.connect(analyser);
+
+      voices = []; harmonicTrail = [];
+      running = true;
+      el('toggle').textContent = 'Stop mic';
+      el('toggle').classList.add('stop');
+      statusEl.textContent = `Listening · ${sampleRate} Hz · FFT ${FFT_SIZE} · ${binWidth.toFixed(2)} Hz/bin`;
+      resizeAll();
+      loop();
+    } catch (err) {
+      statusEl.className = 'status err';
+      statusEl.textContent = 'Error: ' + err.message;
+      console.error(err);
+    }
+  }
+
+  function stop() {
+    running = false;
+    cancelAnimationFrame(rafId);
+    if (source) source.disconnect();
+    if (stream) stream.getTracks().forEach(t => t.stop());
+    if (audioCtx) audioCtx.close();
+    audioCtx = analyser = source = stream = null;
+    voices = []; harmonicTrail = [];
+    el('toggle').textContent = 'Start mic';
+    el('toggle').classList.remove('stop');
+    statusEl.textContent = 'Stopped.';
+    renderVoiceCards([]);
+    el('unisonHint').textContent = '';
+    el('overblow').innerHTML = 'Overblow (&gt;1 kHz): <b>—</b>';
+    el('overblow').classList.remove('hot');
+    el('flatVal').textContent = '—'; el('levelVal').textContent = '—';
+    el('flatMeter').style.width = '0'; el('levelMeter').style.width = '0';
+    el('bgtones').innerHTML = '<div class="empty">—</div>';
+    specCtx.clearRect(0, 0, specSize.w, specSize.h);
+    histCtx.clearRect(0, 0, histSize.w, histSize.h);
+  }
+
+  el('toggle').addEventListener('click', () => running ? stop() : start());
+  el('refA').addEventListener('change', e => { refA = parseInt(e.target.value, 10); });
+  window.addEventListener('resize', () => { if (running) resizeAll(); });
+
+  buildVoiceCards();
+})();
+</script>
+</body>
+</html>
