@@ -356,7 +356,14 @@
     for (const v of voices) {
       if (!v.matchedThisFrame) { v.framesMissing++; v.framesSeen = 0; }
     }
-    voices = voices.filter(v => v.framesMissing < RELEASE);
+    // Trim every trail to the history window, then keep a voice if it's still
+    // being tracked OR still has visible history. This way going silent leaves
+    // a gap in the strip-chart instead of wiping it; the trail only fully
+    // disappears once it scrolls past the 12 s window.
+    for (const v of voices) {
+      while (v.trail.length && v.trail[0].t < t - HIST_MS) v.trail.shift();
+    }
+    voices = voices.filter(v => v.framesMissing < RELEASE || v.trail.length);
 
     // a voice is "live" once it has survived ATTACK frames and is currently present
     const live = voices
@@ -364,11 +371,8 @@
       .sort((a, b) => a.freq - b.freq)
       .slice(0, MAX_VOICES);
 
-    // record trails for the strip-chart
-    live.forEach(v => {
-      v.trail.push({ t, freq: v.freq });
-      while (v.trail.length && v.trail[0].t < t - HIST_MS) v.trail.shift();
-    });
+    // extend trails only while live & present — gaps form naturally during silence
+    live.forEach(v => v.trail.push({ t, freq: v.freq }));
     return live;
   }
 
@@ -442,13 +446,17 @@
   let specSize = { w: 0, h: 0 }, histSize = { w: 0, h: 0 };
   function resizeAll() { specSize = fit(specCanvas, specCtx); histSize = fit(histCanvas, histCtx); }
 
-  // ---------- spectrum drawing (0..1000 Hz, top-10 labelled) ----------
-  function drawSpectrum(db, labelPeaks) {
+  // ---------- spectrum drawing (0..1000 Hz, dB axis, clear peaks labelled) ----------
+  const DB_MIN = -100, DB_MAX = 0; // vertical loudness range of the spectrum
+  const yForDb = (d, h) => h - Math.max(0, Math.min(1, (d - DB_MIN) / (DB_MAX - DB_MIN))) * h;
+
+  function drawSpectrum(db, labelPeaks, thresholdDb) {
     const { w, h } = specSize;
     specCtx.clearRect(0, 0, w, h);
     const minBin = Math.max(1, Math.floor(MIN_FREQ / binWidth));
     const maxBin = Math.min(db.length - 1, Math.ceil(FUND_MAX / binWidth));
 
+    // gridlines: vertical (frequency) + horizontal (dB)
     specCtx.strokeStyle = 'rgba(255,255,255,0.05)';
     specCtx.fillStyle = '#6b7785';
     specCtx.font = '10px sans-serif';
@@ -457,13 +465,16 @@
       specCtx.beginPath(); specCtx.moveTo(x, 0); specCtx.lineTo(x, h); specCtx.stroke();
       specCtx.fillText(f, x + 3, h - 5);
     });
+    for (let d = DB_MAX; d >= DB_MIN; d -= 20) {
+      const y = yForDb(d, h);
+      specCtx.beginPath(); specCtx.moveTo(0, y); specCtx.lineTo(w, y); specCtx.stroke();
+    }
 
+    // spectrum fill
     specCtx.beginPath();
     specCtx.moveTo(0, h);
     for (let i = minBin; i <= maxBin; i++) {
-      const x = (i * binWidth / FUND_MAX) * w;
-      const y = h - Math.max(0, Math.min(1, (db[i] + 100) / 100)) * h;
-      specCtx.lineTo(x, y);
+      specCtx.lineTo((i * binWidth / FUND_MAX) * w, yForDb(db[i], h));
     }
     specCtx.lineTo(w, h); specCtx.closePath();
     const g = specCtx.createLinearGradient(0, 0, 0, h);
@@ -472,10 +483,29 @@
     specCtx.fillStyle = g; specCtx.fill();
     specCtx.strokeStyle = 'rgba(76,194,255,0.7)'; specCtx.lineWidth = 1; specCtx.stroke();
 
-    // label top-10 peaks within the band, staggering text to avoid collisions
+    // dB axis labels (drawn over the fill so they stay readable)
+    specCtx.fillStyle = '#8b97a6';
+    specCtx.font = '10px sans-serif';
+    for (let d = DB_MAX; d >= DB_MIN; d -= 20) {
+      specCtx.fillText(d + ' dB', 3, Math.max(9, yForDb(d, h) - 2));
+    }
+
+    // live detection cutoff: peaks below this dashed line are ignored
+    if (isFinite(thresholdDb)) {
+      const y = yForDb(thresholdDb, h);
+      specCtx.strokeStyle = 'rgba(210,153,34,0.85)';
+      specCtx.setLineDash([5, 4]); specCtx.lineWidth = 1;
+      specCtx.beginPath(); specCtx.moveTo(0, y); specCtx.lineTo(w, y); specCtx.stroke();
+      specCtx.setLineDash([]);
+      specCtx.fillStyle = 'rgba(210,153,34,0.95)';
+      const lbl = `detect cutoff ${thresholdDb.toFixed(0)} dB`;
+      specCtx.fillText(lbl, w - specCtx.measureText(lbl).width - 4, Math.max(9, y - 3));
+    }
+
+    // label clear peaks, staggering text to avoid collisions
     labelPeaks.forEach((p, idx) => {
       const x = (p.freq / FUND_MAX) * w;
-      const y = h - Math.max(0, Math.min(1, (p.mag + 100) / 100)) * h;
+      const y = yForDb(p.mag, h);
       specCtx.strokeStyle = 'rgba(230,237,243,0.25)';
       specCtx.lineWidth = 1;
       specCtx.beginPath(); specCtx.moveTo(x, y); specCtx.lineTo(x, 16 + (idx % 4) * 13); specCtx.stroke();
@@ -585,7 +615,7 @@
     // The same filtered set drives chamber/harmonic detection, so the history
     // strip-chart only shows harmonics strong enough to appear in the spectrum.
     const clearBandPeaks = selectClearPeaks(bandPeaks, PEAK_DROP_DB, SPEC_MAX_LABELS);
-    drawSpectrum(freqData, clearBandPeaks);
+    drawSpectrum(freqData, clearBandPeaks, thresholdDb);
 
     // ---- overblow field: strongest peak above 1k ----
     const ob = el('overblow');
