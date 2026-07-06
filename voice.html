@@ -77,6 +77,15 @@
   .fundamental .note .oct { font-size: 26px; color: var(--muted); font-weight: 500; }
   .fundamental .freq { color: var(--muted); font-size: 14px; margin-top: 6px; font-variant-numeric: tabular-nums; }
   .fundamental .cents { font-size: 14px; font-weight: 600; margin-top: 4px; font-variant-numeric: tabular-nums; }
+  .fundamental .whistle {
+    margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line);
+    font-size: 14px; color: var(--accent-2); font-variant-numeric: tabular-nums;
+  }
+  .fundamental .whistle .wlabel {
+    font-size: 10px; text-transform: uppercase; letter-spacing: .6px;
+    color: var(--muted); margin-right: 6px; font-weight: 600;
+  }
+  .fundamental .whistle b { font-size: 17px; }
 
   .technique {
     background: var(--panel-2); border: 1px solid var(--line); border-radius: 12px;
@@ -153,7 +162,7 @@
 </header>
 
 <main>
-  <div class="status" id="status">Press “Start mic” and sing or speak a sustained tone.</div>
+  <div class="status" id="status">Press “Start mic” and sing, speak, whistle — or whistle while singing.</div>
 
   <section>
     <div class="hero">
@@ -162,15 +171,17 @@
         <div class="note">—</div>
         <div class="freq">— Hz</div>
         <div class="cents"></div>
+        <div class="whistle" id="whistleRow" style="display:none"><span class="wlabel">Whistle</span><b>—</b> <span class="wfreq" style="color:var(--muted)"></span></div>
       </div>
       <div class="technique" id="technique">
-        <div class="tlabel">Technique signature</div>
+        <div class="tlabel">Detected mode</div>
         <div class="tname">—</div>
-        <div class="tdesc">Hold a steady vowel or hum to reveal the harmonic stack and a best-guess vocal colour.</div>
+        <div class="tdesc">Sing, speak, whistle — or combine them — and the analyser will classify what it hears.</div>
         <div class="metrics">
           <div class="metric">Harmonics<b id="richCount">—</b></div>
           <div class="metric">Centroid<b id="centroid">—</b></div>
           <div class="metric">Tonal ↔ noisy<b id="flatVal">—</b></div>
+          <div class="metric">Whistle<b id="whistleVal">—</b></div>
         </div>
       </div>
     </div>
@@ -198,14 +209,15 @@
   </section>
 
   <section>
-    <h2>Pitch history <span class="hint">last 12 s · fundamental only</span></h2>
+    <h2>Pitch history <span class="hint">last 12 s · voice (purple) &amp; whistle (blue)</span></h2>
     <canvas id="history"></canvas>
   </section>
 </main>
 
 <footer>
-  Maps detected peaks onto a harmonic series from the sung fundamental. Technique labels are rough heuristics
-  (breathiness, brightness, overtone isolation) — not a substitute for listening. Serve over
+  Maps detected peaks onto a harmonic series from the sung fundamental, tracks whistles as an independent
+  pure-tone source, and classifies the last ~2 s as whistling, speech, singing, throat singing, or a
+  whistle + voice combination. Labels are heuristics — not a substitute for listening. Serve over
   <code>https</code> or <code>localhost</code> for mic access.
 </footer>
 
@@ -219,7 +231,7 @@
     '#61afef','#4cc2ff','#56d364','#e3b341','#f85149','#abb2bf'
   ];
 
-  const MIN_FREQ = 80;
+  const MIN_FREQ = 50;        // low enough to catch kargyraa subharmonics (f0/2 of a ~110 Hz drone)
   const SPEC_MAX = 4000;
   const FUND_MIN = 80;
   const FUND_MAX = 700;       // typical sung fundamental range
@@ -236,8 +248,30 @@
   const MAX_HARMONICS = 24;
   let ATTACK = 3, RELEASE = 25;
 
+  // Whistle detection — runs independently of the voice tracker so combos work.
+  const WHISTLE_MIN = 500, WHISTLE_MAX = 3500;
+  const WHISTLE_PROM_DB = 15;      // peak must stand this far above its local spectral neighbourhood
+  const WHISTLE_PURITY_DB = 18;    // the whistle's own 2nd harmonic must sit at least this far down
+  const WHISTLE_AVOID_CENTS = 45;  // keep clear of voice harmonics — those are overtones, not whistles
+  const WHISTLE_MATCH_CENTS = 140; // whistles glide fast; allow big frame-to-frame jumps
+  const WHISTLE_REL_DB = 15;       // whistle must be within this of the loudest peak overall
+  const WHISTLE_EXCL_MAX_N = 12;   // harmonic exclusion stops here — above H12 the ±45¢ zones
+                                   // overlap (spacing < 2×45¢), which would veto every whistle
+
+  // Temporal (rolling-window) classification.
+  const WIN_MS = 2000;             // feature window
+  const PLATEAU_CENTS = 50;        // "on a note" = within this of the local median pitch
+  const PLATEAU_LOCAL_MS = 250;    // ± local-median window for the plateau test
+  const VIB_LAG_MIN_MS = 120, VIB_LAG_MAX_MS = 300; // vibrato search 3.3–8.3 Hz
+  const VIB_MIN_R = 0.35;          // autocorrelation peak needed to call it vibrato
+  const VIB_MIN_CENTS = 12, VIB_MAX_CENTS = 180;    // plausible vibrato extent
+  const GAP_MIN_MS = 40, GAP_MAX_MS = 500;          // syllabic voicing gaps (speech cue)
+  const CLASS_HOLD_MS = 500;       // new label must persist this long before display switches
+  const FAST_FFT = 2048;           // 2nd analyser for envelope — the big FFT smears ~0.7 s
+  const SOUND_FLOOR_DB = -55;      // RMS (dBFS) above which a frame counts as "sounding"
+
   const HIST_MS = 12000;
-  const HIST_FMIN = 80, HIST_FMAX = 900;
+  const HIST_FMIN = 80, HIST_FMAX = 3600;
 
   const DB_MIN = -100, DB_MAX = 0;
 
@@ -248,6 +282,10 @@
 
   let voice = null;             // tracked fundamental { freq, samples, trail, ... }
   let nextVoiceId = 1;
+  let whistleTrk = null;        // tracked whistle { freq, samples, trail, ... } — independent of voice
+  let fastAnalyser = null, fastTime = null;
+  let frames = [];              // rolling per-frame records for window classification
+  let modeState = { shownId: null, pendingId: null, pendingSince: 0 };
 
   const el = id => document.getElementById(id);
   const statusEl = el('status');
@@ -318,6 +356,87 @@
     return Math.min(1, Math.exp(logSum / n) / (linSum / n));
   }
 
+  function localMedianDb(db, freq) {
+    const lo = Math.max(1, Math.floor((freq - 150) / binWidth));
+    const hi = Math.min(db.length - 1, Math.ceil((freq + 150) / binWidth));
+    const vals = [];
+    for (let i = lo; i <= hi; i++) {
+      if (Math.abs(i * binWidth - freq) < 25) continue; // exclude the peak's own lobe
+      vals.push(db[i]);
+    }
+    return vals.length ? median(vals) : -Infinity;
+  }
+
+  function maxDbNear(db, freq, cents) {
+    const lo = Math.max(1, Math.floor(freq * Math.pow(2, -cents / 1200) / binWidth));
+    const hi = Math.min(db.length - 1, Math.ceil(freq * Math.pow(2, cents / 1200) / binWidth));
+    let m = -Infinity;
+    for (let i = lo; i <= hi; i++) if (db[i] > m) m = db[i];
+    return m;
+  }
+
+  function harmonicSupportCount(f, peaks) {
+    let n = 0;
+    for (let k = 2; k <= 8; k++) {
+      const target = f * k;
+      if (target > PEAK_MAX) break;
+      if (peaks.some(p => Math.abs(centsBetween(p.freq, target)) < HARMONIC_CENTS)) n++;
+    }
+    return n;
+  }
+
+  // A whistle is a locally prominent, near-sinusoidal peak that is NOT one of the
+  // voice's harmonics (a strong exact harmonic is overtone singing, not a whistle).
+  function detectWhistle(peaks, db, f0) {
+    let best = null;
+    const topMag = peaks.length ? Math.max(...peaks.map(p => p.mag)) : -Infinity;
+    for (const p of peaks) {
+      if (p.freq < WHISTLE_MIN || p.freq > WHISTLE_MAX) continue;
+      if (p.mag < topMag - WHISTLE_REL_DB) continue;
+      if (f0) {
+        const n = Math.round(p.freq / f0);
+        if (n >= 1 && n <= WHISTLE_EXCL_MAX_N &&
+            Math.abs(centsBetween(p.freq, f0 * n)) < WHISTLE_AVOID_CENTS) continue;
+      }
+      if (p.mag - localMedianDb(db, p.freq) < WHISTLE_PROM_DB) continue;
+      const f2 = p.freq * 2;
+      if (f2 < sampleRate / 2 - 2 * binWidth) {
+        // purity: its own octave must be quiet — unless a voice harmonic happens to sit there
+        let masked = false;
+        if (f0) {
+          const n2 = Math.round(f2 / f0);
+          masked = n2 >= 1 && Math.abs(centsBetween(f2, f0 * n2)) < HARMONIC_CENTS;
+        }
+        if (!masked && maxDbNear(db, f2, 50) > p.mag - WHISTLE_PURITY_DB) continue;
+      }
+      if (!best || p.mag > best.mag) best = p;
+    }
+    return best;
+  }
+
+  function updateWhistle(f, t) {
+    if (f) {
+      if (whistleTrk && Math.abs(centsBetween(f, whistleTrk.freq)) < WHISTLE_MATCH_CENTS) {
+        whistleTrk.samples.push(f);
+        if (whistleTrk.samples.length > 5) whistleTrk.samples.shift();
+        whistleTrk.freq = median(whistleTrk.samples);
+        whistleTrk.framesSeen++;
+        whistleTrk.framesMissing = 0;
+      } else {
+        whistleTrk = { freq: f, samples: [f], framesSeen: 1, framesMissing: 0, trail: [] };
+      }
+    } else if (whistleTrk) {
+      whistleTrk.framesMissing++;
+    }
+    if (whistleTrk) {
+      while (whistleTrk.trail.length && whistleTrk.trail[0].t < t - HIST_MS) whistleTrk.trail.shift();
+      const live = whistleTrk.framesSeen >= 2 && whistleTrk.framesMissing === 0;
+      if (live) whistleTrk.trail.push({ t, freq: whistleTrk.freq });
+      if (whistleTrk.framesMissing >= RELEASE && !whistleTrk.trail.length) whistleTrk = null;
+    }
+    return whistleTrk && whistleTrk.framesSeen >= 2 && whistleTrk.framesMissing === 0 ? whistleTrk : null;
+  }
+
   // Pick fundamental by harmonic-fit scoring, not just "lowest peak".
   function findFundamental(peaks) {
     const candidates = peaks.filter(p => p.freq >= FUND_MIN && p.freq <= FUND_MAX);
@@ -325,13 +444,15 @@
 
     let best = null, bestScore = -Infinity;
     for (const c of candidates) {
-      let score = c.mag;
+      // Score in dB above the floor — raw dB mags are negative, so summing them
+      // directly would punish candidates for every harmonic they have.
+      let score = Math.max(0, c.mag - ABS_FLOOR_DB);
       let support = 0;
       for (let n = 2; n <= MAX_HARMONICS; n++) {
         const target = c.freq * n;
         if (target > PEAK_MAX) break;
         const match = peaks.find(p => Math.abs(centsBetween(p.freq, target)) < HARMONIC_CENTS);
-        if (match) { score += match.mag * 0.35; support++; }
+        if (match) { score += Math.max(0, match.mag - ABS_FLOOR_DB) * 0.35; support++; }
       }
       score += support * 4;
 
@@ -340,7 +461,7 @@
         const sub = peaks.find(p =>
           Math.abs(centsBetween(p.freq, c.freq / d)) < HARMONIC_CENTS && p.mag > c.mag - 4
         );
-        if (sub) score -= 12;
+        if (sub) score -= 15;
       }
 
       if (score > bestScore) { bestScore = score; best = c; }
@@ -411,61 +532,210 @@
     return den ? num / den : 0;
   }
 
-  function classifyTechnique(f0, harmonics, flatness) {
+  // Per-frame spectral signature of the voiced part: overtone-singing / subharmonic
+  // flags for the window classifier, plus a texture label used as the singing sub-type.
+  function frameVoiceSignature(f0, harmonicMap, flatness) {
+    const harmonics = harmonicMap.harmonics;
     if (!f0 || !harmonics.length) {
-      return { id: 'silent', name: '—', desc: 'Hold a steady tone to analyse harmonics.' };
+      return { overtone: false, domN: 0, sub: false, texture: null, isolatedTop: null };
     }
-
     const db = n => harmonics.find(h => h.n === n)?.dbRel ?? -99;
     const count = harmonics.filter(h => h.dbRel > -28).length;
-    const isolated = harmonics.filter(h => h.n >= 5 && h.dbRel > -8 && h.prominence > 10);
+    const isolated = harmonics
+      .filter(h => h.n >= 5 && h.n <= 13 && h.dbRel > -8 && h.prominence > 10)
+      .sort((a, b) => b.mag - a.mag);
+    const overtone = f0 < 220 && isolated.length >= 1;
+    const sub = harmonicMap.subharmonic.some(s => s.dbRel > -14);
 
-    if (f0 < 220 && isolated.length >= 1) {
-      const top = isolated.sort((a, b) => b.mag - a.mag)[0];
-      return {
-        id: 'overtone',
-        name: 'Overtone / throat singing',
-        desc: `Strong isolated H${top.n} (${top.freq.toFixed(0)} Hz) ringing above a low drone — characteristic of overtone singing.`
-      };
-    }
-
-    if (flatness > 0.42) {
-      return {
-        id: 'breathy',
-        name: 'Breathy / aspirated',
-        desc: 'Energy spread across many bins; weak, noisy harmonic stack — whispery or breathy phonation.'
-      };
-    }
-
+    let texture;
     if (db(2) > -4 && db(3) > -8 && db(4) > -14) {
-      return {
-        id: 'bright',
-        name: 'Bright / projected',
-        desc: 'Prominent low harmonics (2nd–4th) close to the fundamental — carrying, speech-like or belted colour.'
-      };
+      texture = { name: 'bright / projected', desc: 'prominent low harmonics close to the fundamental — carrying, belted colour' };
+    } else if (db(2) < -14 && harmonics.some(h => h.n >= 6 && h.dbRel > -16)) {
+      texture = { name: 'light / head voice', desc: 'weak 2nd partial with energy shifted upward — falsetto or head-register quality' };
+    } else if (count >= 10) {
+      texture = { name: 'rich modal', desc: 'long harmonic series with many audible partials — resonant, full voice' };
+    } else {
+      texture = { name: 'modal', desc: 'recognisable harmonic stack with typical sung partial decay' };
     }
+    return { overtone, domN: overtone ? isolated[0].n : 0, sub, texture, isolatedTop: isolated[0] || null };
+  }
 
-    if (db(2) < -14 && harmonics.some(h => h.n >= 6 && h.dbRel > -16)) {
-      return {
-        id: 'head',
-        name: 'Light / head voice',
-        desc: 'Weak 2nd partial, energy shifted upward — falsetto or light head-register quality.'
-      };
+  function pushFrame(rec) {
+    frames.push(rec);
+    const cut = rec.t - WIN_MS;
+    while (frames.length && frames[0].t < cut) frames.shift();
+  }
+
+  // Regular 3.3–8.3 Hz pitch oscillation over the longest recent voiced run = vibrato.
+  function vibratoFeature() {
+    let best = [], cur = [], lastT = null;
+    for (const fr of frames) {
+      if (!fr.f0) continue;
+      if (lastT !== null && fr.t - lastT > 80 && cur.length) {
+        if (cur.length > best.length) best = cur;
+        cur = [];
+      }
+      cur.push(fr);
+      lastT = fr.t;
     }
-
-    if (count >= 10) {
-      return {
-        id: 'rich',
-        name: 'Rich modal tone',
-        desc: 'Long harmonic series with many audible partials — resonant, classical "full" voice.'
-      };
+    if (cur.length > best.length) best = cur;
+    if (best.length < 30) return { present: false };
+    const dur = best[best.length - 1].t - best[0].t;
+    if (dur < 900) return { present: false };
+    const dt = dur / (best.length - 1);
+    const cents = best.map(fr => fr.cents);
+    const k = Math.max(2, Math.round(125 / dt)); // ±125 ms moving-average detrend
+    const dev = cents.map((c, i) => {
+      const lo = Math.max(0, i - k), hi = Math.min(cents.length - 1, i + k);
+      let s = 0;
+      for (let j = lo; j <= hi; j++) s += cents[j];
+      return c - s / (hi - lo + 1);
+    });
+    let power = 0;
+    for (const d of dev) power += d * d;
+    const extent = Math.sqrt(power / dev.length) * Math.SQRT2; // ≈ peak deviation
+    if (!power || extent < VIB_MIN_CENTS || extent > VIB_MAX_CENTS) return { present: false };
+    const lagMin = Math.max(1, Math.round(VIB_LAG_MIN_MS / dt));
+    const lagMax = Math.min(dev.length - 8, Math.round(VIB_LAG_MAX_MS / dt));
+    let bestR = -1, bestLag = 0;
+    for (let L = lagMin; L <= lagMax; L++) {
+      let s = 0;
+      for (let i = 0; i + L < dev.length; i++) s += dev[i] * dev[i + L];
+      const r = s / power;
+      if (r > bestR) { bestR = r; bestLag = L; }
     }
+    return { present: bestR > VIB_MIN_R, rate: bestLag ? 1000 / (bestLag * dt) : 0, extent, r: bestR };
+  }
 
-    return {
-      id: 'modal',
-      name: 'Modal voice',
-      desc: 'Recognisable harmonic stack with typical sung partial decay.'
-    };
+  function windowFeatures(t) {
+    if (frames.length < 12 || t - frames[0].t < 700) return null;
+    const spanS = (t - frames[0].t) / 1000;
+
+    let sounding = 0, voiced = 0, whistled = 0, overtoneN = 0, subN = 0;
+    for (const fr of frames) {
+      if (fr.sounding) sounding++;
+      if (fr.f0) {
+        voiced++;
+        if (fr.overtone) overtoneN++;
+        if (fr.sub) subN++;
+      }
+      if (fr.whistle) whistled++;
+    }
+    const base = Math.max(sounding, 1);
+    const voicedFrac = Math.min(1, voiced / base);
+    const whistleFrac = Math.min(1, whistled / base);
+    const overtoneFrac = voiced ? overtoneN / voiced : 0;
+    const subFrac = voiced ? subN / voiced : 0;
+
+    // syllabic voicing gaps: voiced → short unvoiced → voiced again
+    let gaps = 0, inGap = false, gapStart = 0, sawVoiced = false;
+    for (const fr of frames) {
+      if (fr.f0) {
+        if (inGap) {
+          const g = fr.t - gapStart;
+          if (g >= GAP_MIN_MS && g <= GAP_MAX_MS) gaps++;
+        }
+        inGap = false;
+        sawVoiced = true;
+      } else if (sawVoiced && !inGap) {
+        inGap = true;
+        gapStart = fr.t;
+      }
+    }
+    const gapRate = gaps / spanS;
+
+    // plateau: fraction of voiced time spent parked on a pitch. Judged by the pitch
+    // RANGE in the surrounding window — a smooth glide stays near its own local
+    // median, so a median-deviation test would wrongly count glides as plateaus.
+    const vf = frames.filter(fr => fr.f0);
+    let plateau = 0, judged = 0;
+    for (const fr of vf) {
+      let lo = Infinity, hi = -Infinity, n = 0;
+      for (const o of vf) {
+        if (Math.abs(o.t - fr.t) > PLATEAU_LOCAL_MS) continue;
+        if (o.cents < lo) lo = o.cents;
+        if (o.cents > hi) hi = o.cents;
+        n++;
+      }
+      if (n < 4) continue;
+      judged++;
+      if (hi - lo < 2 * PLATEAU_CENTS) plateau++;
+    }
+    const plateauFrac = judged ? plateau / judged : 0;
+
+    return { voicedFrac, whistleFrac, overtoneFrac, subFrac, gapRate, plateauFrac, vibrato: vibratoFeature() };
+  }
+
+  // Instantaneous label id; whistle and voice classes are independent, so combos fall out.
+  function instantModeId(feat, hasInput, flat) {
+    if (!hasInput) return 'silent';
+    if (!feat) return 'listening';
+    const w = feat.whistleFrac > 0.35;
+    let v = 'none';
+    if (feat.voicedFrac > 0.2) {
+      if (feat.overtoneFrac > 0.3) v = 'sygyt';
+      else if (feat.subFrac > 0.35) v = 'kargyraa';
+      else if (feat.vibrato.present || (feat.plateauFrac > 0.55 && feat.gapRate < 1.6)) v = 'sing';
+      else if (feat.gapRate >= 1.6 || feat.plateauFrac < 0.35) v = 'speech';
+      else v = feat.plateauFrac >= 0.45 ? 'sing' : 'speech';
+    }
+    if (w && v !== 'none') return 'whistle+' + v;
+    if (w) return 'whistle';
+    if (v !== 'none') return v;
+    return flat > 0.42 ? 'breathy' : 'unpitched';
+  }
+
+  // Only switch the displayed label once the new one has held for CLASS_HOLD_MS.
+  function classifyMode(t, hasInput, flat) {
+    const feat = windowFeatures(t);
+    const instant = instantModeId(feat, hasInput, flat);
+    if (modeState.shownId === null) {
+      modeState.shownId = instant;
+    } else if (instant !== modeState.shownId) {
+      if (modeState.pendingId === instant) {
+        if (t - modeState.pendingSince >= CLASS_HOLD_MS) {
+          modeState.shownId = instant;
+          modeState.pendingId = null;
+        }
+      } else {
+        modeState.pendingId = instant;
+        modeState.pendingSince = t;
+      }
+    } else {
+      modeState.pendingId = null;
+    }
+    return { id: modeState.shownId, feat };
+  }
+
+  function modeText(id, feat, sig, whistleLive) {
+    const wNote = whistleLive ? `${noteLabel(whistleLive.freq)} · ${whistleLive.freq.toFixed(0)} Hz` : '';
+    const vib = feat && feat.vibrato.present
+      ? ` Vibrato ${feat.vibrato.rate.toFixed(1)} Hz, ±${Math.round(feat.vibrato.extent)}¢.`
+      : '';
+    const singName = 'Singing — ' + (sig.texture ? sig.texture.name : 'modal');
+    const singDesc = (sig.texture ? sig.texture.desc.charAt(0).toUpperCase() + sig.texture.desc.slice(1) : 'Sustained pitch plateaus') + '.' + vib;
+    switch (id) {
+      case 'silent': return { name: '—', desc: 'Sing, speak, whistle — or combine them — to analyse.' };
+      case 'listening': return { name: 'Listening…', desc: 'Gathering a couple of seconds of context.' };
+      case 'unpitched': return { name: 'Unpitched sound', desc: 'Input detected but no stable pitch — tap, hiss, or room noise.' };
+      case 'breathy': return { name: 'Breathy / aspirated', desc: 'Energy spread across many bins with a weak harmonic stack — whispery or breathy phonation.' };
+      case 'whistle': return { name: 'Whistling', desc: `Near-pure tone${wNote ? ` at ${wNote}` : ''} — one dominant partial with no harmonic stack.` };
+      case 'speech': return { name: 'Speech', desc: 'Continuous pitch glides, short voiced runs and syllabic gaps — spoken phrasing rather than held notes.' };
+      case 'sing': return { name: singName, desc: singDesc };
+      case 'sygyt': return {
+        name: 'Throat singing (overtone)',
+        desc: `Steady drone with an isolated ringing overtone${sig.isolatedTop ? ` (H${sig.isolatedTop.n} · ${sig.isolatedTop.freq.toFixed(0)} Hz)` : ''} — sygyt/khöömei-style.`
+      };
+      case 'kargyraa': return {
+        name: 'Throat singing (kargyraa)',
+        desc: 'Strong subharmonics under the fundamental — period-doubled, growling phonation.'
+      };
+      case 'whistle+speech': return { name: 'Whistling + speech', desc: `Whistled tone${wNote ? ` (${wNote})` : ''} over spoken phrasing.` };
+      case 'whistle+sing': return { name: 'Whistling + singing', desc: `Whistled tone${wNote ? ` (${wNote})` : ''} riding over a sung note. ${singDesc}` };
+      case 'whistle+sygyt':
+      case 'whistle+kargyraa': return { name: 'Whistling + throat singing', desc: `Whistled tone${wNote ? ` (${wNote})` : ''} over a throat-singing drone.` };
+      default: return { name: '—', desc: '' };
+    }
   }
 
   function updateVoice(f0, t) {
@@ -505,28 +775,39 @@
     return voice && voice.framesSeen >= ATTACK && voice.framesMissing === 0 ? voice : null;
   }
 
-  function renderFundamental(live) {
+  function renderFundamental(live, whistleLive) {
     const box = el('fundamental');
     const noteEl = box.querySelector('.note');
     const freqEl = box.querySelector('.freq');
     const centsEl = box.querySelector('.cents');
+    const wRow = el('whistleRow');
+
+    box.classList.toggle('idle', !live && !whistleLive);
     if (!live) {
-      box.classList.add('idle');
       noteEl.textContent = '—';
       freqEl.textContent = '— Hz';
       centsEl.textContent = '';
-      return;
+    } else {
+      const { name, octave, cents } = freqToNote(live.freq);
+      noteEl.innerHTML = `${name}<span class="oct">${octave}</span>`;
+      freqEl.textContent = `${live.freq.toFixed(1)} Hz`;
+      const inTune = Math.abs(cents) <= 5, close = Math.abs(cents) <= 15;
+      centsEl.textContent = `${cents > 0 ? '+' : ''}${cents}¢ from nearest semitone`;
+      centsEl.style.color = inTune ? 'var(--good)' : close ? 'var(--warn)' : 'var(--bad)';
     }
-    box.classList.remove('idle');
-    const { name, octave, cents } = freqToNote(live.freq);
-    noteEl.innerHTML = `${name}<span class="oct">${octave}</span>`;
-    freqEl.textContent = `${live.freq.toFixed(1)} Hz`;
-    const inTune = Math.abs(cents) <= 5, close = Math.abs(cents) <= 15;
-    centsEl.textContent = `${cents > 0 ? '+' : ''}${cents}¢ from nearest semitone`;
-    centsEl.style.color = inTune ? 'var(--good)' : close ? 'var(--warn)' : 'var(--bad)';
+
+    if (whistleLive) {
+      const { name, octave, cents } = freqToNote(whistleLive.freq);
+      wRow.style.display = '';
+      wRow.querySelector('b').textContent = `${name}${octave}`;
+      wRow.querySelector('.wfreq').textContent =
+        `${whistleLive.freq.toFixed(1)} Hz · ${cents > 0 ? '+' : ''}${cents}¢`;
+    } else {
+      wRow.style.display = 'none';
+    }
   }
 
-  function renderTechnique(info, harmonics, flatness, hasInput) {
+  function renderTechnique(info, harmonics, flatness, hasInput, whistleLive) {
     el('technique').querySelector('.tname').textContent = info.name;
     el('technique').querySelector('.tdesc').textContent = info.desc;
     const rich = harmonics.filter(h => h.dbRel > -28).length;
@@ -536,6 +817,7 @@
     el('flatVal').textContent = hasInput
       ? (flatness < 0.25 ? 'tonal' : flatness < 0.42 ? 'mixed' : 'noisy')
       : '—';
+    el('whistleVal').textContent = whistleLive ? noteLabel(whistleLive.freq) : '—';
   }
 
   function renderHarmTable(harmonics) {
@@ -557,7 +839,7 @@
       </tr>`;
     }).join('');
     wrap.innerHTML = `<table>
-      <thead><tr><th>#</th><th>Note</th><th>Freq</th><th vs H1</th><th>Detune</th><th>Level</th></tr></thead>
+      <thead><tr><th>#</th><th>Note</th><th>Freq</th><th>vs H1</th><th>Detune</th><th>Level</th></tr></thead>
       <tbody>${rows}</tbody></table>`;
   }
 
@@ -594,7 +876,7 @@
     histSize = fit(histCanvas, histCtx);
   }
 
-  function drawSpectrum(db, peaks, harmonicMap, f0, thresholdDb) {
+  function drawSpectrum(db, peaks, harmonicMap, f0, thresholdDb, whistleLive) {
     const { w, h } = specSize;
     specCtx.clearRect(0, 0, w, h);
     const minBin = Math.max(1, Math.floor(MIN_FREQ / binWidth));
@@ -663,6 +945,20 @@
       }
     });
 
+    if (whistleLive && whistleLive.freq <= SPEC_MAX) {
+      const x = (whistleLive.freq / SPEC_MAX) * w;
+      const bin = Math.round(whistleLive.freq / binWidth);
+      const y = yForDb(db[Math.min(bin, db.length - 1)], h);
+      specCtx.strokeStyle = '#4cc2ff';
+      specCtx.lineWidth = 2;
+      specCtx.beginPath();
+      specCtx.arc(x, y, 7, 0, Math.PI * 2);
+      specCtx.stroke();
+      specCtx.fillStyle = '#4cc2ff';
+      specCtx.font = 'bold 10px sans-serif';
+      specCtx.fillText('W ' + noteLabel(whistleLive.freq), x + 9, y - 6);
+    }
+
     if (f0) {
       specCtx.fillStyle = '#8b97a6';
       specCtx.font = '10px sans-serif';
@@ -708,11 +1004,27 @@
     return ht - Math.max(0, Math.min(1, t)) * ht;
   };
 
+  function drawTrail(trail, color, t, w, h) {
+    if (!trail.length) return;
+    const xForT = tt => w - ((t - tt) / HIST_MS) * w;
+    histCtx.strokeStyle = color;
+    histCtx.lineWidth = 2;
+    histCtx.beginPath();
+    let started = false, prevT = null;
+    trail.forEach(pt => {
+      const x = xForT(pt.t), y = yForFreq(pt.freq, h);
+      if (started && prevT !== null && pt.t - prevT > 200) { histCtx.stroke(); histCtx.beginPath(); started = false; }
+      if (!started) { histCtx.moveTo(x, y); started = true; } else { histCtx.lineTo(x, y); }
+      prevT = pt.t;
+    });
+    histCtx.stroke();
+  }
+
   function drawHistory(t) {
     const { w, h } = histSize;
     histCtx.clearRect(0, 0, w, h);
     histCtx.font = '10px sans-serif';
-    for (let midi = 36; midi <= 84; midi++) {
+    for (let midi = 36; midi <= 105; midi++) {
       const nm = NOTE_NAMES[midi % 12];
       if (nm !== 'C' && nm !== 'A') continue;
       const f = refA * Math.pow(2, (midi - 69) / 12);
@@ -724,19 +1036,8 @@
       histCtx.fillText(nm + (Math.floor(midi / 12) - 1), 3, y - 2);
     }
 
-    if (!voice || !voice.trail.length) return;
-    const xForT = tt => w - ((t - tt) / HIST_MS) * w;
-    histCtx.strokeStyle = '#c678dd';
-    histCtx.lineWidth = 2;
-    histCtx.beginPath();
-    let started = false, prevT = null;
-    voice.trail.forEach(pt => {
-      const x = xForT(pt.t), y = yForFreq(pt.freq, h);
-      if (started && prevT !== null && pt.t - prevT > 200) { histCtx.stroke(); histCtx.beginPath(); started = false; }
-      if (!started) { histCtx.moveTo(x, y); started = true; } else { histCtx.lineTo(x, y); }
-      prevT = pt.t;
-    });
-    histCtx.stroke();
+    if (voice) drawTrail(voice.trail, '#c678dd', t, w, h);
+    if (whistleTrk) drawTrail(whistleTrk.trail, '#4cc2ff', t, w, h);
   }
 
   function loop() {
@@ -773,20 +1074,51 @@
     const clearPeaks = selectClearPeaks(allPeaks, peakDropDb, 32);
 
     const rawFund = hasInput && tonalEnough && clearPeaks.length ? findFundamental(clearPeaks) : null;
-    const f0 = rawFund ? rawFund.freq : null;
+    let f0 = rawFund ? rawFund.freq : null;
+    // A pure high peak with no harmonic stack is a whistle, not a voice fundamental.
+    if (f0 && f0 >= WHISTLE_MIN && harmonicSupportCount(f0, clearPeaks) <= 1) f0 = null;
     if (voice) voice.matchedThisFrame = false;
     const live = updateVoice(f0, t);
-
     const stableF0 = live ? live.freq : f0;
-    const harmonicMap = mapHarmonics(stableF0, clearPeaks);
-    const technique = classifyTechnique(stableF0, harmonicMap.harmonics, flat);
 
-    drawSpectrum(freqData, clearPeaks, harmonicMap, stableF0, thresholdDb);
+    // exclude against the RAW frame f0 — the smoothed track lags glides by enough
+    // cents that real harmonics would slip past the exclusion and read as whistles
+    const wPeak = hasInput ? detectWhistle(clearPeaks, freqData, f0 || stableF0) : null;
+    const whistleLive = updateWhistle(wPeak ? wPeak.freq : null, t);
+
+    // keep the whistle peak out of the voice's harmonic/inharmonic bookkeeping
+    const voicePeaks = wPeak
+      ? clearPeaks.filter(p => Math.abs(centsBetween(p.freq, wPeak.freq)) > 30)
+      : clearPeaks;
+    const harmonicMap = mapHarmonics(stableF0, voicePeaks);
+    const sig = frameVoiceSignature(stableF0, harmonicMap, flat);
+
+    // fast-analyser RMS: envelope truth the 0.7 s FFT window can't provide
+    fastAnalyser.getFloatTimeDomainData(fastTime);
+    let sq = 0;
+    for (let i = 0; i < fastTime.length; i++) sq += fastTime[i] * fastTime[i];
+    const rmsDb = 20 * Math.log10(Math.sqrt(sq / fastTime.length) + 1e-9);
+
+    pushFrame({
+      t,
+      sounding: hasInput && rmsDb > SOUND_FLOOR_DB,
+      f0: live ? live.freq : null,
+      cents: live ? 1200 * Math.log2(live.freq / 55) : 0,
+      whistle: whistleLive ? whistleLive.freq : null,
+      overtone: sig.overtone,
+      domN: sig.domN,
+      sub: sig.sub
+    });
+
+    const { id: modeId, feat } = classifyMode(t, hasInput, flat);
+    const mode = modeText(modeId, feat, sig, whistleLive);
+
+    drawSpectrum(freqData, clearPeaks, harmonicMap, stableF0, thresholdDb, whistleLive);
     drawLadder(harmonicMap.harmonics);
     drawHistory(t);
 
-    renderFundamental(live);
-    renderTechnique(technique, harmonicMap.harmonics, flat, hasInput);
+    renderFundamental(live, whistleLive);
+    renderTechnique(mode, harmonicMap.harmonics, flat, hasInput, whistleLive);
     renderHarmTable(harmonicMap.harmonics);
     renderPartials(harmonicMap.inharmonic, harmonicMap.subharmonic);
   }
@@ -809,8 +1141,16 @@
       freqData = new Float32Array(analyser.frequencyBinCount);
       source = audioCtx.createMediaStreamSource(stream);
       source.connect(analyser);
+      fastAnalyser = audioCtx.createAnalyser();
+      fastAnalyser.fftSize = FAST_FFT;
+      fastAnalyser.smoothingTimeConstant = 0;
+      fastTime = new Float32Array(FAST_FFT);
+      source.connect(fastAnalyser);
 
       voice = null;
+      whistleTrk = null;
+      frames = [];
+      modeState = { shownId: null, pendingId: null, pendingSince: 0 };
       running = true;
       el('toggle').textContent = 'Stop mic';
       el('toggle').classList.add('stop');
@@ -831,12 +1171,16 @@
     if (stream) stream.getTracks().forEach(tr => tr.stop());
     if (audioCtx) audioCtx.close();
     audioCtx = analyser = source = stream = null;
+    fastAnalyser = fastTime = null;
     voice = null;
+    whistleTrk = null;
+    frames = [];
+    modeState = { shownId: null, pendingId: null, pendingSince: 0 };
     el('toggle').textContent = 'Start mic';
     el('toggle').classList.remove('stop');
     statusEl.textContent = 'Stopped.';
-    renderFundamental(null);
-    renderTechnique({ name: '—', desc: 'Hold a steady vowel or hum to reveal the harmonic stack.' }, [], 0, false);
+    renderFundamental(null, null);
+    renderTechnique({ name: '—', desc: 'Sing, speak, whistle — or combine them — to analyse.' }, [], 0, false, null);
     renderHarmTable([]);
     renderPartials([], []);
     specCtx.clearRect(0, 0, specSize.w, specSize.h);
