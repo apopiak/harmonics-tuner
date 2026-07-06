@@ -3,11 +3,11 @@
 Two standalone, single-file browser tools using the Web Audio API. **No build
 step, no dependencies, no backend, no data storage** — edit the HTML directly.
 
-- `huaca.html` — 3-chamber polyphonic pitch tracker (default A = 432). Internals
-  and rationale in [`DESIGN.md`](DESIGN.md).
+- `huaca.html` — 3-chamber polyphonic pitch tracker (default A = 432).
 - `voice.html` — voice harmonics analyzer + mode classifier (whistling / speech /
-  singing / throat singing, incl. whistle+voice combos). Internals and rationale
-  in [`DESIGN-voice.md`](DESIGN-voice.md).
+  singing / throat singing, incl. whistle+voice combos).
+
+Internals and rationale for both are in [`DESIGN.md`](DESIGN.md).
 
 ## Testing changes
 

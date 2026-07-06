@@ -36,6 +36,6 @@ Quiet rooms, sustained tones, and a consistent microphone position give the clea
 
 The analyzers use browser FFT data and lightweight heuristics. They are useful for exploration and tuning feedback, but the labels are best guesses rather than formal acoustic measurements.
 
-For how the tools work internally — detection pipelines, design trade-offs, and symptom-to-setting tuning guides — see [`DESIGN.md`](DESIGN.md) for `huaca.html` and [`DESIGN-voice.md`](DESIGN-voice.md) for `voice.html`.
+For how the tools work internally — detection pipelines, design trade-offs, and symptom-to-setting tuning guides — see [`DESIGN.md`](DESIGN.md).
 
 `voice.html`'s mode classifier has a microphone-free regression test that synthesizes each vocal mode in headless Chromium: see `test/voice-scenarios.js` (requires a dev-only `npm install playwright-core`; the tools themselves have no dependencies).
