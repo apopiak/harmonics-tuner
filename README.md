@@ -5,7 +5,7 @@ Standalone browser tools for listening to sustained tones through the microphone
 The repo currently contains two single-file HTML apps:
 
 - `huaca.html` tracks up to three chamber tones for a huaca or similar polyphonic wind instrument. It folds obvious harmonics back into their likely fundamentals, shows a live spectrum, labels chamber candidates, and keeps a short pitch history.
-- `voice.html` analyzes a sung or spoken tone as a harmonic stack. It detects the fundamental, maps partials onto the harmonic series, shows inharmonic and subharmonic peaks, and gives rough vocal-colour heuristics.
+- `voice.html` analyzes vocal sound as a harmonic stack. It detects the fundamental, maps partials onto the harmonic series, shows inharmonic and subharmonic peaks, tracks whistles as an independent pure-tone source, and classifies the input over a rolling window as whistling, speech, singing, throat singing (overtone or kargyraa style), or a whistle + voice combination.
 
 Both tools run entirely in the browser with the Web Audio API. There is no build step, package install, backend, or data storage.
 
