@@ -1,0 +1,853 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Voice Harmonics Analyzer</title>
+<style>
+  :root {
+    --bg: #0e1116;
+    --panel: #161b22;
+    --panel-2: #1c232d;
+    --line: #2a323d;
+    --text: #e6edf3;
+    --muted: #8b97a6;
+    --accent: #c678dd;
+    --accent-2: #4cc2ff;
+    --good: #3fb950;
+    --warn: #d29922;
+    --bad: #f85149;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  header {
+    padding: 16px 24px;
+    border-bottom: 1px solid var(--line);
+    display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+  }
+  h1 { font-size: 18px; margin: 0; font-weight: 600; letter-spacing: .2px; }
+  h1 span { color: var(--muted); font-weight: 400; }
+  .controls { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-left: auto; }
+  button {
+    font: inherit; font-weight: 600;
+    background: var(--accent); color: #120818; border: 0;
+    padding: 9px 18px; border-radius: 8px; cursor: pointer;
+    transition: filter .15s;
+  }
+  button:hover { filter: brightness(1.08); }
+  button.stop { background: var(--bad); color: #1a0606; }
+  label.ctrl { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 13px; user-select: none; }
+  select {
+    background: var(--panel-2); color: var(--text); border: 1px solid var(--line);
+    border-radius: 6px; padding: 5px 8px; font: inherit; font-size: 13px;
+  }
+  input[type=range] { accent-color: var(--accent); }
+
+  main { padding: 20px 24px; max-width: 1100px; margin: 0 auto; }
+  .status { font-size: 13px; color: var(--muted); margin-bottom: 16px; min-height: 18px; }
+  .status.err { color: var(--bad); }
+
+  section {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+    padding: 16px; margin-bottom: 20px;
+  }
+  section h2 {
+    font-size: 13px; text-transform: uppercase; letter-spacing: .8px;
+    color: var(--muted); margin: 0 0 12px; font-weight: 600;
+    display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+  }
+  section h2 .hint { text-transform: none; letter-spacing: 0; font-weight: 400; font-size: 12px; color: var(--muted); }
+
+  .hero { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; align-items: stretch; }
+  @media (max-width: 720px) { .hero { grid-template-columns: 1fr; } }
+
+  .fundamental {
+    background: var(--panel-2); border: 1px solid var(--line); border-radius: 12px;
+    padding: 18px; border-left: 3px solid var(--accent);
+  }
+  .fundamental.idle { opacity: .4; }
+  .fundamental .flabel { font-size: 11px; text-transform: uppercase; letter-spacing: .8px; color: var(--muted); font-weight: 600; margin-bottom: 6px; }
+  .fundamental .note { font-size: 52px; font-weight: 700; line-height: 1; letter-spacing: -1px; }
+  .fundamental .note .oct { font-size: 26px; color: var(--muted); font-weight: 500; }
+  .fundamental .freq { color: var(--muted); font-size: 14px; margin-top: 6px; font-variant-numeric: tabular-nums; }
+  .fundamental .cents { font-size: 14px; font-weight: 600; margin-top: 4px; font-variant-numeric: tabular-nums; }
+
+  .technique {
+    background: var(--panel-2); border: 1px solid var(--line); border-radius: 12px;
+    padding: 18px; display: flex; flex-direction: column; justify-content: center;
+  }
+  .technique .tlabel { font-size: 11px; text-transform: uppercase; letter-spacing: .8px; color: var(--muted); font-weight: 600; margin-bottom: 8px; }
+  .technique .tname { font-size: 22px; font-weight: 700; color: var(--accent-2); margin-bottom: 8px; }
+  .technique .tdesc { font-size: 13px; color: var(--muted); line-height: 1.45; }
+  .technique .metrics { display: flex; gap: 16px; margin-top: 14px; flex-wrap: wrap; }
+  .technique .metric { font-size: 12px; color: var(--muted); }
+  .technique .metric b { display: block; color: var(--text); font-size: 18px; font-variant-numeric: tabular-nums; }
+
+  canvas { width: 100%; display: block; border-radius: 8px; background: #0a0d12; }
+  #spectrum { height: 280px; }
+  #ladder   { height: 200px; }
+  #history  { height: 180px; }
+
+  .split { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 720px) { .split { grid-template-columns: 1fr; } }
+
+  .harm-table { font-size: 13px; font-variant-numeric: tabular-nums; }
+  .harm-table table { width: 100%; border-collapse: collapse; }
+  .harm-table th {
+    text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: .6px;
+    color: var(--muted); font-weight: 600; padding: 6px 8px; border-bottom: 1px solid var(--line);
+  }
+  .harm-table td { padding: 5px 8px; border-bottom: 1px solid rgba(42,50,61,.6); }
+  .harm-table tr:last-child td { border-bottom: 0; }
+  .harm-table .hn { color: var(--accent-2); font-weight: 600; }
+  .harm-table .bar-cell { width: 38%; }
+  .harm-table .bar { height: 8px; border-radius: 4px; background: var(--line); overflow: hidden; }
+  .harm-table .bar > i { display: block; height: 100%; border-radius: 4px; }
+
+  .partial-list { font-size: 13px; }
+  .partial-list .empty { color: var(--muted); font-style: italic; }
+  .partial-list ul { list-style: none; margin: 0; padding: 0; }
+  .partial-list li {
+    display: flex; justify-content: space-between; gap: 12px;
+    padding: 5px 0; border-bottom: 1px solid var(--line); font-variant-numeric: tabular-nums;
+  }
+  .partial-list li:last-child { border-bottom: 0; }
+  .partial-list .tag {
+    font-size: 10px; text-transform: uppercase; letter-spacing: .5px;
+    padding: 2px 6px; border-radius: 4px; background: var(--panel); color: var(--muted);
+  }
+  .partial-list .tag.inharm { color: var(--warn); }
+  .partial-list .tag.sub { color: var(--accent); }
+
+  footer { color: var(--muted); font-size: 12px; padding: 8px 24px 28px; max-width: 1100px; margin: 0 auto; }
+  code { background: var(--panel-2); padding: 1px 5px; border-radius: 4px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Voice Harmonics <span>· spectral partial analysis</span></h1>
+  <div class="controls">
+    <label class="ctrl" title="Concert pitch reference for note names.">
+      A =
+      <select id="refA">
+        <option value="432">432 Hz</option>
+        <option value="440" selected>440 Hz</option>
+      </select>
+    </label>
+    <label class="ctrl" title="Peak detection strictness. Lower = picks up quieter singing; higher = ignores weak partials.">
+      sensitivity
+      <input type="range" id="sensitivity" min="2" max="18" value="5" style="width:90px">
+    </label>
+    <label class="ctrl" title="Pitch smoothing — higher = steadier note readout.">
+      stability
+      <input type="range" id="stability" min="0" max="100" value="45" style="width:90px">
+    </label>
+    <button id="toggle">Start mic</button>
+  </div>
+</header>
+
+<main>
+  <div class="status" id="status">Press “Start mic” and sing or speak a sustained tone.</div>
+
+  <section>
+    <div class="hero">
+      <div class="fundamental idle" id="fundamental">
+        <div class="flabel">Fundamental (H1)</div>
+        <div class="note">—</div>
+        <div class="freq">— Hz</div>
+        <div class="cents"></div>
+      </div>
+      <div class="technique" id="technique">
+        <div class="tlabel">Technique signature</div>
+        <div class="tname">—</div>
+        <div class="tdesc">Hold a steady vowel or hum to reveal the harmonic stack and a best-guess vocal colour.</div>
+        <div class="metrics">
+          <div class="metric">Harmonics<b id="richCount">—</b></div>
+          <div class="metric">Centroid<b id="centroid">—</b></div>
+          <div class="metric">Tonal ↔ noisy<b id="flatVal">—</b></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Live spectrum <span class="hint">80–4000 Hz · partials coloured by harmonic number</span></h2>
+    <canvas id="spectrum"></canvas>
+  </section>
+
+  <section>
+    <h2>Harmonic ladder <span class="hint">relative level of each partial vs H1</span></h2>
+    <canvas id="ladder"></canvas>
+  </section>
+
+  <section class="split">
+    <div>
+      <h2>Harmonic series</h2>
+      <div class="harm-table" id="harmTable"><div class="empty" style="color:var(--muted);font-style:italic">—</div></div>
+    </div>
+    <div>
+      <h2>Other partials <span class="hint">inharmonic &amp; subharmonic</span></h2>
+      <div class="partial-list" id="partials"><div class="empty">—</div></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Pitch history <span class="hint">last 12 s · fundamental only</span></h2>
+    <canvas id="history"></canvas>
+  </section>
+</main>
+
+<footer>
+  Maps detected peaks onto a harmonic series from the sung fundamental. Technique labels are rough heuristics
+  (breathiness, brightness, overtone isolation) — not a substitute for listening. Serve over
+  <code>https</code> or <code>localhost</code> for mic access.
+</footer>
+
+<script>
+(() => {
+  "use strict";
+
+  const NOTE_NAMES = ['C','C♯','D','D♯','E','F','F♯','G','G♯','A','A♯','B'];
+  const HARM_COLORS = [
+    '#c678dd','#e06c75','#d19a66','#e5c07b','#98c379','#56b6c2',
+    '#61afef','#4cc2ff','#56d364','#e3b341','#f85149','#abb2bf'
+  ];
+
+  const MIN_FREQ = 80;
+  const SPEC_MAX = 4000;
+  const FUND_MIN = 80;
+  const FUND_MAX = 700;       // typical sung fundamental range
+  const PEAK_MAX = 5000;
+  const FFT_SIZE = 32768;
+
+  const ABS_FLOOR_DB = -80;
+  const TONAL_MAX_FLATNESS = 0.55;  // wide 4 kHz band inflates flatness vs narrow band
+  const PEAK_DROP_DB = 28;          // base; widens automatically when signal is quiet
+  const HARM_DEPTH_DB = 32;         // how far below the loudest peak we still hunt harmonics
+  const HARMONIC_CENTS = 35;
+  const MATCH_CENTS = 50;
+  const SMOOTH_N = 10;
+  const MAX_HARMONICS = 24;
+  let ATTACK = 3, RELEASE = 25;
+
+  const HIST_MS = 12000;
+  const HIST_FMIN = 80, HIST_FMAX = 900;
+
+  const DB_MIN = -100, DB_MAX = 0;
+
+  let audioCtx, analyser, source, stream, rafId;
+  let freqData, timeData, sampleRate, binWidth;
+  let running = false;
+  let refA = 440;
+
+  let voice = null;             // tracked fundamental { freq, samples, trail, ... }
+  let nextVoiceId = 1;
+
+  const el = id => document.getElementById(id);
+  const statusEl = el('status');
+  const specCanvas = el('spectrum');
+  const ladderCanvas = el('ladder');
+  const histCanvas = el('history');
+  const specCtx = specCanvas.getContext('2d');
+  const ladderCtx = ladderCanvas.getContext('2d');
+  const histCtx = histCanvas.getContext('2d');
+
+  const now = () => performance.now();
+  const centsBetween = (a, b) => 1200 * Math.log2(a / b);
+  const median = arr => { const s = [...arr].sort((a, b) => a - b); return s[Math.floor(s.length / 2)]; };
+  const yForDb = (d, h) => h - Math.max(0, Math.min(1, (d - DB_MIN) / (DB_MAX - DB_MIN))) * h;
+  const harmColor = n => HARM_COLORS[(n - 1) % HARM_COLORS.length];
+
+  function freqToNote(freq) {
+    const midi = 69 + 12 * Math.log2(freq / refA);
+    const rounded = Math.round(midi);
+    const cents = Math.round((midi - rounded) * 100);
+    const name = NOTE_NAMES[((rounded % 12) + 12) % 12];
+    const octave = Math.floor(rounded / 12) - 1;
+    return { name, octave, cents };
+  }
+  const noteLabel = f => { const n = freqToNote(f); return n.name + n.octave; };
+
+  function detectPeaks(db, thresholdDb, fMax) {
+    const minBin = Math.max(1, Math.floor(MIN_FREQ / binWidth));
+    const maxBin = Math.min(db.length - 2, Math.ceil(fMax / binWidth));
+    const peaks = [];
+    for (let i = minBin; i <= maxBin; i++) {
+      const a = db[i - 1], b = db[i], c = db[i + 1];
+      if (b > a && b >= c && b > thresholdDb) {
+        const denom = (a - 2 * b + c);
+        const p = denom !== 0 ? 0.5 * (a - c) / denom : 0;
+        const freq = (i + p) * binWidth;
+        const mag = b - 0.25 * (a - c) * p;
+        if (freq >= MIN_FREQ && freq <= fMax) peaks.push({ freq, mag });
+      }
+    }
+    peaks.sort((x, y) => y.mag - x.mag);
+    return peaks;
+  }
+
+  function selectClearPeaks(peaks, dropDb, maxCount) {
+    if (!peaks.length) return [];
+    const floor = peaks[0].mag - dropDb;
+    const kept = [];
+    for (const p of peaks) {
+      if (p.mag < floor) break;
+      if (kept.some(k => Math.abs(centsBetween(p.freq, k.freq)) < 30)) continue;
+      kept.push(p);
+      if (kept.length >= maxCount) break;
+    }
+    return kept;
+  }
+
+  function spectralFlatness(db) {
+    const minBin = Math.max(1, Math.floor(MIN_FREQ / binWidth));
+    const maxBin = Math.min(db.length - 1, Math.ceil(SPEC_MAX / binWidth));
+    let logSum = 0, linSum = 0, n = 0;
+    for (let i = minBin; i <= maxBin; i++) {
+      const power = Math.pow(10, db[i] / 10);
+      logSum += Math.log(power + 1e-12);
+      linSum += power; n++;
+    }
+    if (!n || linSum === 0) return 0;
+    return Math.min(1, Math.exp(logSum / n) / (linSum / n));
+  }
+
+  // Pick fundamental by harmonic-fit scoring, not just "lowest peak".
+  function findFundamental(peaks) {
+    const candidates = peaks.filter(p => p.freq >= FUND_MIN && p.freq <= FUND_MAX);
+    if (!candidates.length) return null;
+
+    let best = null, bestScore = -Infinity;
+    for (const c of candidates) {
+      let score = c.mag;
+      let support = 0;
+      for (let n = 2; n <= MAX_HARMONICS; n++) {
+        const target = c.freq * n;
+        if (target > PEAK_MAX) break;
+        const match = peaks.find(p => Math.abs(centsBetween(p.freq, target)) < HARMONIC_CENTS);
+        if (match) { score += match.mag * 0.35; support++; }
+      }
+      score += support * 4;
+
+      // penalise if a stronger subharmonic exists (this peak might be H2/H3 of something lower)
+      for (let d = 2; d <= 4; d++) {
+        const sub = peaks.find(p =>
+          Math.abs(centsBetween(p.freq, c.freq / d)) < HARMONIC_CENTS && p.mag > c.mag - 4
+        );
+        if (sub) score -= 12;
+      }
+
+      if (score > bestScore) { bestScore = score; best = c; }
+    }
+    return best;
+  }
+
+  function mapHarmonics(f0, peaks) {
+    if (!f0) return { harmonics: [], inharmonic: [], subharmonic: [] };
+
+    const used = new Set();
+    const harmonics = [];
+
+    for (let n = 1; n <= MAX_HARMONICS; n++) {
+      const target = f0 * n;
+      if (target > PEAK_MAX) break;
+      let best = null, bestCents = HARMONIC_CENTS;
+      for (let i = 0; i < peaks.length; i++) {
+        if (used.has(i)) continue;
+        const dc = Math.abs(centsBetween(peaks[i].freq, target));
+        if (dc < bestCents) { bestCents = dc; best = { idx: i, peak: peaks[i] }; }
+      }
+      if (best) {
+        used.add(best.idx);
+        harmonics.push({
+          n,
+          freq: best.peak.freq,
+          mag: best.peak.mag,
+          centsOff: Math.round(centsBetween(best.peak.freq, target))
+        });
+      }
+    }
+
+    const h1Mag = harmonics.find(h => h.n === 1)?.mag ?? harmonics[0]?.mag ?? 0;
+    harmonics.forEach(h => {
+      h.dbRel = h.mag - h1Mag;
+      const neighbors = harmonics.filter(x => Math.abs(x.n - h.n) === 1);
+      const neighborMax = neighbors.length ? Math.max(...neighbors.map(x => x.mag)) : -Infinity;
+      h.prominence = h.mag - neighborMax;
+    });
+
+    const inharmonic = [];
+    const subharmonic = [];
+    peaks.forEach((p, i) => {
+      if (used.has(i)) return;
+      let isSub = false;
+      for (let d = 2; d <= 4; d++) {
+        if (Math.abs(centsBetween(p.freq, f0 / d)) < HARMONIC_CENTS) {
+          subharmonic.push({ freq: p.freq, mag: p.mag, ratio: `1/${d}×`, dbRel: p.mag - h1Mag });
+          isSub = true;
+          break;
+        }
+      }
+      if (!isSub) inharmonic.push({ freq: p.freq, mag: p.mag, dbRel: p.mag - h1Mag });
+    });
+
+    return { harmonics, inharmonic, subharmonic };
+  }
+
+  function spectralCentroid(harmonics) {
+    if (!harmonics.length) return 0;
+    let num = 0, den = 0;
+    for (const h of harmonics) {
+      const w = Math.pow(10, h.dbRel / 10);
+      num += h.freq * w;
+      den += w;
+    }
+    return den ? num / den : 0;
+  }
+
+  function classifyTechnique(f0, harmonics, flatness) {
+    if (!f0 || !harmonics.length) {
+      return { id: 'silent', name: '—', desc: 'Hold a steady tone to analyse harmonics.' };
+    }
+
+    const db = n => harmonics.find(h => h.n === n)?.dbRel ?? -99;
+    const count = harmonics.filter(h => h.dbRel > -28).length;
+    const isolated = harmonics.filter(h => h.n >= 5 && h.dbRel > -8 && h.prominence > 10);
+
+    if (f0 < 220 && isolated.length >= 1) {
+      const top = isolated.sort((a, b) => b.mag - a.mag)[0];
+      return {
+        id: 'overtone',
+        name: 'Overtone / throat singing',
+        desc: `Strong isolated H${top.n} (${top.freq.toFixed(0)} Hz) ringing above a low drone — characteristic of overtone singing.`
+      };
+    }
+
+    if (flatness > 0.42) {
+      return {
+        id: 'breathy',
+        name: 'Breathy / aspirated',
+        desc: 'Energy spread across many bins; weak, noisy harmonic stack — whispery or breathy phonation.'
+      };
+    }
+
+    if (db(2) > -4 && db(3) > -8 && db(4) > -14) {
+      return {
+        id: 'bright',
+        name: 'Bright / projected',
+        desc: 'Prominent low harmonics (2nd–4th) close to the fundamental — carrying, speech-like or belted colour.'
+      };
+    }
+
+    if (db(2) < -14 && harmonics.some(h => h.n >= 6 && h.dbRel > -16)) {
+      return {
+        id: 'head',
+        name: 'Light / head voice',
+        desc: 'Weak 2nd partial, energy shifted upward — falsetto or light head-register quality.'
+      };
+    }
+
+    if (count >= 10) {
+      return {
+        id: 'rich',
+        name: 'Rich modal tone',
+        desc: 'Long harmonic series with many audible partials — resonant, classical "full" voice.'
+      };
+    }
+
+    return {
+      id: 'modal',
+      name: 'Modal voice',
+      desc: 'Recognisable harmonic stack with typical sung partial decay.'
+    };
+  }
+
+  function updateVoice(f0, t) {
+    if (!f0) {
+      if (voice) voice.framesMissing++;
+    } else if (voice && voice.framesMissing === 0 && Math.abs(centsBetween(f0, voice.freq)) < MATCH_CENTS) {
+      voice.matchedThisFrame = true;
+      voice.samples.push(f0);
+      if (voice.samples.length > SMOOTH_N) voice.samples.shift();
+      voice.freq = median(voice.samples);
+      voice.framesSeen++;
+      voice.framesMissing = 0;
+      voice.lastT = t;
+    } else if (voice && voice.framesMissing > 0 && Math.abs(centsBetween(f0, voice.freq)) < MATCH_CENTS) {
+      voice.matchedThisFrame = true;
+      voice.samples.push(f0);
+      if (voice.samples.length > SMOOTH_N) voice.samples.shift();
+      voice.freq = median(voice.samples);
+      voice.framesSeen = 1;
+      voice.framesMissing = 0;
+      voice.lastT = t;
+    } else {
+      voice = {
+        id: nextVoiceId++, freq: f0, samples: [f0],
+        framesSeen: 1, framesMissing: 0, matchedThisFrame: true, lastT: t, trail: []
+      };
+    }
+
+    if (voice) {
+      if (!voice.matchedThisFrame && f0) voice.framesMissing++;
+      while (voice.trail.length && voice.trail[0].t < t - HIST_MS) voice.trail.shift();
+      const live = voice.framesSeen >= ATTACK && voice.framesMissing === 0;
+      if (live) voice.trail.push({ t, freq: voice.freq });
+      if (voice.framesMissing >= RELEASE && !voice.trail.length) voice = null;
+    }
+
+    return voice && voice.framesSeen >= ATTACK && voice.framesMissing === 0 ? voice : null;
+  }
+
+  function renderFundamental(live) {
+    const box = el('fundamental');
+    const noteEl = box.querySelector('.note');
+    const freqEl = box.querySelector('.freq');
+    const centsEl = box.querySelector('.cents');
+    if (!live) {
+      box.classList.add('idle');
+      noteEl.textContent = '—';
+      freqEl.textContent = '— Hz';
+      centsEl.textContent = '';
+      return;
+    }
+    box.classList.remove('idle');
+    const { name, octave, cents } = freqToNote(live.freq);
+    noteEl.innerHTML = `${name}<span class="oct">${octave}</span>`;
+    freqEl.textContent = `${live.freq.toFixed(1)} Hz`;
+    const inTune = Math.abs(cents) <= 5, close = Math.abs(cents) <= 15;
+    centsEl.textContent = `${cents > 0 ? '+' : ''}${cents}¢ from nearest semitone`;
+    centsEl.style.color = inTune ? 'var(--good)' : close ? 'var(--warn)' : 'var(--bad)';
+  }
+
+  function renderTechnique(info, harmonics, flatness, hasInput) {
+    el('technique').querySelector('.tname').textContent = info.name;
+    el('technique').querySelector('.tdesc').textContent = info.desc;
+    const rich = harmonics.filter(h => h.dbRel > -28).length;
+    el('richCount').textContent = hasInput ? rich : '—';
+    const cent = spectralCentroid(harmonics);
+    el('centroid').textContent = hasInput && cent ? cent.toFixed(0) + ' Hz' : '—';
+    el('flatVal').textContent = hasInput
+      ? (flatness < 0.25 ? 'tonal' : flatness < 0.42 ? 'mixed' : 'noisy')
+      : '—';
+  }
+
+  function renderHarmTable(harmonics) {
+    const wrap = el('harmTable');
+    if (!harmonics.length) {
+      wrap.innerHTML = '<div class="empty" style="color:var(--muted);font-style:italic">none detected</div>';
+      return;
+    }
+    const rows = harmonics.filter(h => h.dbRel > -36).map(h => {
+      const pct = Math.max(2, Math.min(100, (h.dbRel + 40) / 40 * 100));
+      const { name, octave } = freqToNote(h.freq);
+      return `<tr>
+        <td class="hn">H${h.n}</td>
+        <td>${name}${octave}</td>
+        <td>${h.freq.toFixed(1)} Hz</td>
+        <td>${h.dbRel > 0 ? '+' : ''}${h.dbRel.toFixed(1)} dB</td>
+        <td style="color:var(--muted)">${h.centsOff > 0 ? '+' : ''}${h.centsOff}¢</td>
+        <td class="bar-cell"><div class="bar"><i style="width:${pct}%;background:${harmColor(h.n)}"></i></div></td>
+      </tr>`;
+    }).join('');
+    wrap.innerHTML = `<table>
+      <thead><tr><th>#</th><th>Note</th><th>Freq</th><th vs H1</th><th>Detune</th><th>Level</th></tr></thead>
+      <tbody>${rows}</tbody></table>`;
+  }
+
+  function renderPartials(inharmonic, subharmonic) {
+    const wrap = el('partials');
+    const items = [
+      ...subharmonic.map(p => ({ ...p, kind: 'sub', label: p.ratio + ' subharmonic' })),
+      ...inharmonic.slice(0, 6).map(p => ({ ...p, kind: 'inharm', label: 'inharmonic' }))
+    ];
+    if (!items.length) {
+      wrap.innerHTML = '<div class="empty">none — clean harmonic series</div>';
+      return;
+    }
+    wrap.innerHTML = '<ul>' + items.map(p => {
+      const { name, octave, cents } = freqToNote(p.freq);
+      return `<li>
+        <span><span class="tag ${p.kind}">${p.label}</span> <b>${name}${octave}</b>
+          <span style="color:var(--muted)">${cents > 0 ? '+' : ''}${cents}¢ · ${p.dbRel.toFixed(1)} dB</span></span>
+        <span>${p.freq.toFixed(1)} Hz</span></li>`;
+    }).join('') + '</ul>';
+  }
+
+  function fit(cv, ctx) {
+    const dpr = window.devicePixelRatio || 1;
+    const w = cv.clientWidth, h = cv.clientHeight;
+    cv.width = w * dpr; cv.height = h * dpr;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    return { w, h };
+  }
+  let specSize = { w: 0, h: 0 }, ladderSize = { w: 0, h: 0 }, histSize = { w: 0, h: 0 };
+  function resizeAll() {
+    specSize = fit(specCanvas, specCtx);
+    ladderSize = fit(ladderCanvas, ladderCtx);
+    histSize = fit(histCanvas, histCtx);
+  }
+
+  function drawSpectrum(db, peaks, harmonicMap, f0, thresholdDb) {
+    const { w, h } = specSize;
+    specCtx.clearRect(0, 0, w, h);
+    const minBin = Math.max(1, Math.floor(MIN_FREQ / binWidth));
+    const maxBin = Math.min(db.length - 1, Math.ceil(SPEC_MAX / binWidth));
+
+    specCtx.strokeStyle = 'rgba(255,255,255,0.05)';
+    specCtx.fillStyle = '#6b7785';
+    specCtx.font = '10px sans-serif';
+    [200, 500, 1000, 2000, 3000, 4000].forEach(f => {
+      const x = (f / SPEC_MAX) * w;
+      specCtx.beginPath(); specCtx.moveTo(x, 0); specCtx.lineTo(x, h); specCtx.stroke();
+      specCtx.fillText(f >= 1000 ? (f / 1000) + 'k' : f, x + 3, h - 5);
+    });
+    for (let d = DB_MAX; d >= DB_MIN; d -= 20) {
+      const y = yForDb(d, h);
+      specCtx.beginPath(); specCtx.moveTo(0, y); specCtx.lineTo(w, y); specCtx.stroke();
+    }
+
+    specCtx.beginPath();
+    specCtx.moveTo(0, h);
+    for (let i = minBin; i <= maxBin; i++) {
+      specCtx.lineTo((i * binWidth / SPEC_MAX) * w, yForDb(db[i], h));
+    }
+    specCtx.lineTo(w, h); specCtx.closePath();
+    const g = specCtx.createLinearGradient(0, 0, 0, h);
+    g.addColorStop(0, 'rgba(198,120,221,0.45)');
+    g.addColorStop(1, 'rgba(198,120,221,0.03)');
+    specCtx.fillStyle = g; specCtx.fill();
+    specCtx.strokeStyle = 'rgba(198,120,221,0.65)'; specCtx.lineWidth = 1; specCtx.stroke();
+
+    if (isFinite(thresholdDb)) {
+      const y = yForDb(thresholdDb, h);
+      specCtx.strokeStyle = 'rgba(210,153,34,0.85)';
+      specCtx.setLineDash([5, 4]); specCtx.lineWidth = 1;
+      specCtx.beginPath(); specCtx.moveTo(0, y); specCtx.lineTo(w, y); specCtx.stroke();
+      specCtx.setLineDash([]);
+    }
+
+    // vertical guides at harmonic positions
+    if (f0) {
+      for (let n = 1; n <= MAX_HARMONICS; n++) {
+        const hf = f0 * n;
+        if (hf > SPEC_MAX) break;
+        const x = (hf / SPEC_MAX) * w;
+        specCtx.strokeStyle = 'rgba(255,255,255,0.04)';
+        specCtx.beginPath(); specCtx.moveTo(x, 0); specCtx.lineTo(x, h); specCtx.stroke();
+      }
+    }
+
+    const nByFreq = new Map();
+    harmonicMap.harmonics.forEach(h => nByFreq.set(h.freq, h.n));
+
+    peaks.forEach(p => {
+      const x = (p.freq / SPEC_MAX) * w;
+      const y = yForDb(p.mag, h);
+      const n = nByFreq.get(p.freq);
+      const col = n ? harmColor(n) : 'rgba(139,151,166,0.8)';
+      specCtx.fillStyle = col;
+      specCtx.beginPath();
+      specCtx.arc(x, y, n ? 4 : 3, 0, Math.PI * 2);
+      specCtx.fill();
+      if (n) {
+        specCtx.fillStyle = '#e6edf3';
+        specCtx.font = 'bold 10px sans-serif';
+        specCtx.fillText('H' + n, x + 5, y - 4);
+      }
+    });
+
+    if (f0) {
+      specCtx.fillStyle = '#8b97a6';
+      specCtx.font = '10px sans-serif';
+      specCtx.fillText('H1 ' + noteLabel(f0), 4, 14);
+    }
+  }
+
+  function drawLadder(harmonics) {
+    const { w, h } = ladderSize;
+    ladderCtx.clearRect(0, 0, w, h);
+    if (!harmonics.length) return;
+
+    const visible = harmonics.filter(h => h.n <= 20 && h.dbRel > -40);
+    const barH = Math.min(14, (h - 30) / Math.max(visible.length, 1) - 2);
+    const leftPad = 36, rightPad = 48;
+    const barW = w - leftPad - rightPad;
+
+    ladderCtx.font = '10px sans-serif';
+    ladderCtx.fillStyle = '#6b7785';
+    [-10, -20, -30, -40].forEach(db => {
+      const x = leftPad + ((db + 40) / 40) * barW;
+      ladderCtx.strokeStyle = 'rgba(255,255,255,0.06)';
+      ladderCtx.beginPath(); ladderCtx.moveTo(x, 0); ladderCtx.lineTo(x, h); ladderCtx.stroke();
+      ladderCtx.fillText(db + ' dB', x - 12, h - 4);
+    });
+
+    visible.forEach((hmn, i) => {
+      const y = 8 + i * (barH + 2);
+      const pct = Math.max(0, Math.min(1, (hmn.dbRel + 40) / 40));
+      ladderCtx.fillStyle = '#8b97a6';
+      ladderCtx.fillText('H' + hmn.n, 4, y + barH - 2);
+      ladderCtx.fillStyle = 'rgba(42,50,61,0.9)';
+      ladderCtx.fillRect(leftPad, y, barW, barH);
+      ladderCtx.fillStyle = harmColor(hmn.n);
+      ladderCtx.fillRect(leftPad, y, barW * pct, barH);
+      ladderCtx.fillStyle = '#e6edf3';
+      ladderCtx.fillText(hmn.dbRel.toFixed(0) + ' dB', leftPad + barW + 6, y + barH - 2);
+    });
+  }
+
+  const yForFreq = (f, ht) => {
+    const t = (Math.log2(f) - Math.log2(HIST_FMIN)) / (Math.log2(HIST_FMAX) - Math.log2(HIST_FMIN));
+    return ht - Math.max(0, Math.min(1, t)) * ht;
+  };
+
+  function drawHistory(t) {
+    const { w, h } = histSize;
+    histCtx.clearRect(0, 0, w, h);
+    histCtx.font = '10px sans-serif';
+    for (let midi = 36; midi <= 84; midi++) {
+      const nm = NOTE_NAMES[midi % 12];
+      if (nm !== 'C' && nm !== 'A') continue;
+      const f = refA * Math.pow(2, (midi - 69) / 12);
+      if (f < HIST_FMIN || f > HIST_FMAX) continue;
+      const y = yForFreq(f, h);
+      histCtx.strokeStyle = 'rgba(255,255,255,0.05)';
+      histCtx.beginPath(); histCtx.moveTo(0, y); histCtx.lineTo(w, y); histCtx.stroke();
+      histCtx.fillStyle = '#6b7785';
+      histCtx.fillText(nm + (Math.floor(midi / 12) - 1), 3, y - 2);
+    }
+
+    if (!voice || !voice.trail.length) return;
+    const xForT = tt => w - ((t - tt) / HIST_MS) * w;
+    histCtx.strokeStyle = '#c678dd';
+    histCtx.lineWidth = 2;
+    histCtx.beginPath();
+    let started = false, prevT = null;
+    voice.trail.forEach(pt => {
+      const x = xForT(pt.t), y = yForFreq(pt.freq, h);
+      if (started && prevT !== null && pt.t - prevT > 200) { histCtx.stroke(); histCtx.beginPath(); started = false; }
+      if (!started) { histCtx.moveTo(x, y); started = true; } else { histCtx.lineTo(x, y); }
+      prevT = pt.t;
+    });
+    histCtx.stroke();
+  }
+
+  function loop() {
+    rafId = requestAnimationFrame(loop);
+    const t = now();
+    analyser.getFloatFrequencyData(freqData);
+
+    const minBin = Math.max(1, Math.floor(MIN_FREQ / binWidth));
+    const maxBin = Math.min(freqData.length - 1, Math.ceil(SPEC_MAX / binWidth));
+    const band = [];
+    let maxDb = -Infinity;
+    for (let i = minBin; i <= maxBin; i++) { const v = freqData[i]; band.push(v); if (v > maxDb) maxDb = v; }
+    band.sort((a, b) => a - b);
+    // Lower percentile than median — the 4 kHz band has many empty bins that skew median upward
+    // when only a few harmonics poke above the noise, which was starving quiet singing.
+    const noiseFloor = band[Math.floor(band.length * 0.18)];
+
+    const sensitivity = parseInt(el('sensitivity').value, 10);
+    const stability = parseInt(el('stability').value, 10);
+    ATTACK = Math.round(1 + stability / 100 * 6);
+    RELEASE = Math.round(8 + stability / 100 * 40);
+
+    const flat = spectralFlatness(freqData);
+    const snr = maxDb - noiseFloor;
+    const hasInput = maxDb > ABS_FLOOR_DB && snr > 1;
+    // Never set the cutoff above the loudest bin — otherwise quiet tones sit visibly on
+    // the spectrum but fail peak detection when SNR < sensitivity.
+    const thresholdDb = hasInput ? Math.min(noiseFloor + sensitivity, maxDb - 1.5) : Infinity;
+    const harmThreshold = hasInput ? Math.min(thresholdDb, maxDb - HARM_DEPTH_DB) : Infinity;
+    const tonalEnough = flat < TONAL_MAX_FLATNESS || snr > 5;
+    const peakDropDb = Math.min(40, PEAK_DROP_DB + Math.max(0, 16 - snr));
+
+    const allPeaks = hasInput && tonalEnough ? detectPeaks(freqData, harmThreshold, PEAK_MAX) : [];
+    const clearPeaks = selectClearPeaks(allPeaks, peakDropDb, 32);
+
+    const rawFund = hasInput && tonalEnough && clearPeaks.length ? findFundamental(clearPeaks) : null;
+    const f0 = rawFund ? rawFund.freq : null;
+    if (voice) voice.matchedThisFrame = false;
+    const live = updateVoice(f0, t);
+
+    const stableF0 = live ? live.freq : f0;
+    const harmonicMap = mapHarmonics(stableF0, clearPeaks);
+    const technique = classifyTechnique(stableF0, harmonicMap.harmonics, flat);
+
+    drawSpectrum(freqData, clearPeaks, harmonicMap, stableF0, thresholdDb);
+    drawLadder(harmonicMap.harmonics);
+    drawHistory(t);
+
+    renderFundamental(live);
+    renderTechnique(technique, harmonicMap.harmonics, flat, hasInput);
+    renderHarmTable(harmonicMap.harmonics);
+    renderPartials(harmonicMap.inharmonic, harmonicMap.subharmonic);
+  }
+
+  async function start() {
+    try {
+      if (!navigator.mediaDevices?.getUserMedia)
+        throw new Error('getUserMedia unavailable — open over https:// or http://localhost.');
+      statusEl.className = 'status';
+      statusEl.textContent = 'Requesting microphone…';
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false }
+      });
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      sampleRate = audioCtx.sampleRate;
+      binWidth = sampleRate / FFT_SIZE;
+      analyser = audioCtx.createAnalyser();
+      analyser.fftSize = FFT_SIZE;
+      analyser.smoothingTimeConstant = 0.55;
+      freqData = new Float32Array(analyser.frequencyBinCount);
+      source = audioCtx.createMediaStreamSource(stream);
+      source.connect(analyser);
+
+      voice = null;
+      running = true;
+      el('toggle').textContent = 'Stop mic';
+      el('toggle').classList.add('stop');
+      statusEl.textContent = `Listening · ${sampleRate} Hz · FFT ${FFT_SIZE} · ${binWidth.toFixed(2)} Hz/bin`;
+      resizeAll();
+      loop();
+    } catch (err) {
+      statusEl.className = 'status err';
+      statusEl.textContent = 'Error: ' + err.message;
+      console.error(err);
+    }
+  }
+
+  function stop() {
+    running = false;
+    cancelAnimationFrame(rafId);
+    if (source) source.disconnect();
+    if (stream) stream.getTracks().forEach(tr => tr.stop());
+    if (audioCtx) audioCtx.close();
+    audioCtx = analyser = source = stream = null;
+    voice = null;
+    el('toggle').textContent = 'Start mic';
+    el('toggle').classList.remove('stop');
+    statusEl.textContent = 'Stopped.';
+    renderFundamental(null);
+    renderTechnique({ name: '—', desc: 'Hold a steady vowel or hum to reveal the harmonic stack.' }, [], 0, false);
+    renderHarmTable([]);
+    renderPartials([], []);
+    specCtx.clearRect(0, 0, specSize.w, specSize.h);
+    ladderCtx.clearRect(0, 0, ladderSize.w, ladderSize.h);
+    histCtx.clearRect(0, 0, histSize.w, histSize.h);
+  }
+
+  el('toggle').addEventListener('click', () => running ? stop() : start());
+  el('refA').addEventListener('change', e => { refA = parseInt(e.target.value, 10); });
+  window.addEventListener('resize', () => { if (running) resizeAll(); });
+})();
+</script>
+</body>
+</html>
