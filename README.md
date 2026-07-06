@@ -35,3 +35,5 @@ Quiet rooms, sustained tones, and a consistent microphone position give the clea
 ## Notes
 
 The analyzers use browser FFT data and lightweight heuristics. They are useful for exploration and tuning feedback, but the labels are best guesses rather than formal acoustic measurements.
+
+For how `huaca.html` works internally — the detection pipeline, the design trade-offs, and a symptom-to-setting tuning guide — see [`DESIGN.md`](DESIGN.md).
