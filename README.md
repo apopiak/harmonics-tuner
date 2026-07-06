@@ -4,8 +4,8 @@ Standalone browser tools for listening to sustained tones through the microphone
 
 The repo currently contains two single-file HTML apps:
 
-- `huaca-tuner.html` tracks up to three chamber tones for a huaca or similar polyphonic wind instrument. It folds obvious harmonics back into their likely fundamentals, shows a live spectrum, labels chamber candidates, and keeps a short pitch history.
-- `voice-harmonics-tuner.html` analyzes a sung or spoken tone as a harmonic stack. It detects the fundamental, maps partials onto the harmonic series, shows inharmonic and subharmonic peaks, and gives rough vocal-colour heuristics.
+- `huaca.html` tracks up to three chamber tones for a huaca or similar polyphonic wind instrument. It folds obvious harmonics back into their likely fundamentals, shows a live spectrum, labels chamber candidates, and keeps a short pitch history.
+- `voice.html` analyzes a sung or spoken tone as a harmonic stack. It detects the fundamental, maps partials onto the harmonic series, shows inharmonic and subharmonic peaks, and gives rough vocal-colour heuristics.
 
 Both tools run entirely in the browser with the Web Audio API. There is no build step, package install, backend, or data storage.
 
@@ -19,8 +19,8 @@ python3 -m http.server 8000
 
 Then open one of:
 
-- `http://localhost:8000/huaca-tuner.html`
-- `http://localhost:8000/voice-harmonics-tuner.html`
+- `http://localhost:8000/huaca.html`
+- `http://localhost:8000/voice.html`
 
 Press `Start mic`, grant microphone access, and play or sing a steady tone.
 
